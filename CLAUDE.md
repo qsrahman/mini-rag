@@ -1,0 +1,74 @@
+# CLAUDE.md
+
+Mini RAG: a small, fully local RAG CLI (Ollama + ChromaDB + prompt_toolkit). See `README.md` for
+usage and `PLAN.md` for design decisions and roadmap.
+
+## Commands
+
+Use `uv` only (no pip/Poetry/Conda). Python `>=3.14`.
+
+```bash
+uv sync
+uv run pytest                  # no Ollama needed; `live` tests are deselected
+uv run pytest -m live          # real-Ollama end-to-end tests (~2 min)
+uv run ruff check . && uv run ruff format .
+uv run mypy src/               # strict
+uv run mini-rag --help
+```
+
+Add dependencies with `uv add` / `uv add --dev`; commit `uv.lock`.
+
+## Layout
+
+`src/mini_rag/`: `cli.py` (argparse + wiring), `interactive.py` (prompt_toolkit shell and output
+formatting), `config.py`, `models.py`, `indexer.py`, `retriever.py`, `generator.py`, `rag.py`,
+`embeddings.py`, `evaluation.py`, `keyword_index.py`, `reranker.py`, `vector_store.py`, `ollama_utils.py`, `ingestion/{loaders,chunker}.py`.
+Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.py`.
+
+## Architecture rules
+
+- Dependencies point one way: `cli` → `interactive`/`rag`/`indexer` → `retriever`/`generator`/
+  `embeddings`/`vector_store` → `models`. Keep it that way.
+- `rag.py` does no parsing, chunking or Chroma calls. `retriever.py` does no generation.
+  `interactive.py` is presentation only and calls `RagService`, the same as `ask`.
+- `embeddings.py` is independent of the vector store. A new embedder only has to satisfy the
+  `Embedder` protocol (`model` attribute plus `embed(texts)`).
+- Expected failures subclass `MiniRagError` and are caught only in `cli.main` and the chat loop.
+  Per-file `LoaderError`s are caught in `Indexer`; Ollama errors deliberately abort the run.
+- No LangChain/LlamaIndex/Haystack. No external AI APIs. No `input()` for interaction.
+- Retrieval changes should be justified with `mini-rag eval` on a frozen question set, not by intuition.
+- No conversation memory, reranking, hybrid search or web UI (explicitly out of scope).
+
+## Invariants to preserve
+
+- **Safe replacement:** `VectorStore.replace_document` upserts new chunks, then deletes stale ones.
+  Chunk IDs are `{document_id}-{content_hash[:12]}-{chunk_index}`; embed before touching the store.
+- **Fingerprint** = SHA-256 of file bytes + chunk size + overlap. Anything that changes chunk
+  output must be part of it, or unchanged-file skipping will serve stale chunks.
+- **Embedding-model identity** is stored in collection metadata and checked on open; mismatch
+  raises with a `--rebuild` instruction. Never hardcode embedding dimensions.
+- **Sources come from retrieval, not the LLM.** `[S1]`... are assigned in `rag.build_sources`;
+  unknown cited IDs are flagged, never trusted.
+- **Prompt, context format and citation parsing are coupled:** `build_context` labels documents
+  `<document id="S1">`, the system prompt tells the model to cite `[S1]`, and
+  `find_unknown_citations` parses that style. Change them together.
+- **ChromaDB is the source of truth; the FTS5 keyword index is derived.** Every write path in
+  `VectorStore` (replace, delete) must update both; `_sync_keywords` repairs drift on open.
+- Chunk metadata carries the absolute `path` (used by `index --prune`); prune only touches documents
+  under the given directory and never when no supported files are found there.
+- Chroma metadata values are `str | int` only; omit `page` for non-PDF files rather than using None.
+- Chunk sizes are character-based (~4 chars/token), documented in `chunker.py`.
+
+## Testing conventions
+
+- Tests must not need Ollama or model downloads. Fake the Ollama client (`MagicMock`) or use
+  `FakeEmbedder` from `tests/conftest.py`; use `tmp_path` for ChromaDB.
+- `ChatShell` takes an injectable `session` and `write` callback; test through those.
+- `tests/e2e/test_live.py` (marker `live`) is the real end-to-end check; keep its LLM-text assertions
+  loose. When typing into the pty, wait for the `You >` prompt before sending the next line.
+
+## Style
+
+Type hints everywhere (mypy strict). Ruff line length 100. Comments explain *why* only. Use
+`logging` in internals; `print` belongs in `cli.py`/`interactive.py`. Don't suppress exceptions
+silently. Check library signatures against the installed version before relying on them.
