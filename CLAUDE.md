@@ -37,7 +37,8 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
   Per-file `LoaderError`s are caught in `Indexer`; Ollama errors deliberately abort the run.
 - No LangChain/LlamaIndex/Haystack. No external AI APIs. No `input()` for interaction.
 - Retrieval changes should be justified with `mini-rag eval` on a frozen question set, not by intuition.
-- No conversation memory, reranking, hybrid search or web UI (explicitly out of scope).
+- No conversation memory or web UI (explicitly out of scope). Hybrid retrieval is the default;
+  reranking is opt-in and off by default (see PLAN.md for the measurements).
 
 ## Invariants to preserve
 
