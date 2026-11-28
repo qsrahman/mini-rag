@@ -154,12 +154,14 @@ citation style, which `rag.py` parses to detect citations that match no retrieve
 ### Retrieval modes
 
 `hybrid` (default) runs dense vector search and BM25 keyword search, then merges the two ranked
-lists with Reciprocal Rank Fusion (k=60), taking `max(4 * top_k, 20)` candidates from each. It helps
-with exact terms (identifiers, error codes, names, numbers) that embeddings blur. `dense` is vectors
-only. The keyword index is a SQLite FTS5 file (`keywords.sqlite3`, next to the ChromaDB data) that is
-derived from ChromaDB: if the two ever disagree (for example on the first run after upgrading), it is
-rebuilt automatically. With `--source`, hybrid search supports string equality filters on `source`
-only. Measured effect: see PLAN.md.
+lists with Reciprocal Rank Fusion (k=60). Common English function words ("what", "is", "the") are
+ignored by the keyword search unless the query has nothing else. It takes `max(4 * top_k, 20)`
+candidates from each. It helps with exact terms (identifiers, error codes, names, numbers) that
+embeddings blur. `dense` is vectors only. The keyword index is a SQLite FTS5 file
+(`keywords.sqlite3`, next to the ChromaDB data) that is derived from ChromaDB: if the two ever
+disagree (for example on the first run after upgrading), it is rebuilt automatically. With
+`--source`, hybrid search supports string equality filters on `source` only. Measured effect: see
+PLAN.md.
 
 ### Optional reranking
 

@@ -7,7 +7,7 @@ Not a framework. All processing, embedding and inference stay on the machine.
 
 ## Status
 
-The foundation described below is implemented and verified: 155 unit/integration tests pass, ruff
+The foundation described below is implemented and verified: 158 unit/integration tests pass, ruff
 and `mypy --strict` are clean.
 
 `uv run pytest -m live` (8 tests, ~2 min) passed against local Ollama (`qwen3.5:9b-mlx`,
@@ -93,7 +93,25 @@ Reviewed `knowledge/hybrid-retrieval` and `knowledge/agentic-rag`. Outcome:
   | | hybrid | 75.0% | 95.0% | 100.0% | 0.838 | 0.877 |
 
   Caveat: generated questions share wording with their chunk, which favours keyword matching, so
-  real-world gains may be smaller. New baseline: hybrid MRR about 0.67 on the 723-chunk corpus.
+  real-world gains may be smaller.
+- **Stopword removal in keyword search: implemented** (idea from reviewing ARahim3/DigUp). English
+  function words are dropped from the BM25 query unless nothing else is left; no re-indexing
+  needed. Measured with `mini-rag eval` (hybrid, k=10) on newer question sets, so not comparable
+  with the tables above:
+
+  | Corpus | Keyword query | hit@1 | hit@5 | hit@10 | MRR | NDCG@10 |
+  |---|---|---|---|---|---|---|
+  | 728 chunks, 120 questions | all words | 50.8% | 80.8% | 87.5% | 0.640 | 0.698 |
+  | | stopwords removed | 55.0% | 84.2% | 88.3% | 0.671 | 0.723 |
+  | 40 chunks, 40 questions | all words | 70.0% | 92.5% | 92.5% | 0.775 | 0.812 |
+  | | stopwords removed | 70.0% | 92.5% | 97.5% | 0.790 | 0.835 |
+
+  The list is English only; other languages get no filtering.
+- **Other DigUp ideas.** EmbeddingGemma 2 with task prompts scored higher pooled over both sets
+  but less consistently (needs prompt support in the embedder and `--rebuild`); not adopted yet.
+  Score-based fusion instead of RRF, a relevance cutoff and file names in the search text showed no
+  consistent gain. Untested: re-pointing moved files without re-embedding, size/mtime change
+  detection.
 - **Reranker: built as opt-in (`--rerank`), off by default, evidence mixed.** The cookbook uses
   Cohere's API (not local). Ollama 0.40.15 has no rerank endpoint (`/api/rerank` returns 404), and
   a local cross-encoder would add a heavy ML dependency, so candidates are scored by the chat model

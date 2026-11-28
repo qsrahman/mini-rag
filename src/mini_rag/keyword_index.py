@@ -14,6 +14,13 @@ from pathlib import Path
 _FILTER_COLUMNS = frozenset({"source", "document_id"})
 _WORD = re.compile(r"\w+")
 
+# English function words. Left in an OR query they match almost every chunk and add noise to the
+# BM25 ranking. Only function words belong here: "file" or "find" can be what the user is after.
+_STOPWORDS = frozenset(
+    """a about an and any are at be can do does for from how i in is it its me my of on or
+    some that the these this those to was were what when where which who with""".split()  # noqa: SIM905 (far more readable than a list literal)
+)
+
 
 class KeywordIndex:
     def __init__(self, db_path: Path, table: str) -> None:
@@ -52,8 +59,12 @@ class KeywordIndex:
             self._db.execute(f"DELETE FROM {self._table}")
 
     def search(self, query: str, limit: int, filters: Mapping[str, str] | None = None) -> list[str]:
-        """Chunk ids ranked by BM25, best first. Any query word may match (OR)."""
-        words = list(dict.fromkeys(_WORD.findall(query.lower())))
+        """Chunk ids ranked by BM25, best first. Any query word may match (OR).
+
+        Stopwords are ignored unless the query consists of nothing else.
+        """
+        every_word = list(dict.fromkeys(_WORD.findall(query.lower())))
+        words = [w for w in every_word if w not in _STOPWORDS] or every_word
         if not words:
             return []
         conditions = [f"{self._table} MATCH ?"]

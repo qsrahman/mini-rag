@@ -45,3 +45,18 @@ def test_limit_delete_and_clear(index):
     assert index.ids() == {"c2", "c3"}
     index.clear()
     assert index.ids() == set()
+
+
+def test_stopwords_do_not_match_on_their_own(index):
+    # "the" appears in c1 and c2, but only "cache" should decide the result.
+    assert index.search("what is the cache", 5) == ["c1"]
+
+
+def test_query_made_only_of_stopwords_still_searches(index):
+    assert set(index.search("the", 5)) == {"c1", "c2"}
+
+
+def test_single_characters_and_content_words_are_kept(index):
+    index.add([("c4", "c.md", "d3", "The R language and the file format.")])
+    assert index.search("what is R", 5) == ["c4"]
+    assert "c4" in index.search("find the file", 5)
