@@ -20,7 +20,7 @@ def indexed(tmp_path, embedder):
     (root / "a.txt").write_text("alpha content")
     (root / "b.md").write_text("beta content")
     store = VectorStore(tmp_path / "db", "docs", embedder.model)
-    indexer = Indexer(embedder, store, 200, 20)
+    indexer = Indexer(embedder, store, root, 200, 20)
     indexer.index_directory(root)
     return root, store, indexer
 

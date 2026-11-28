@@ -176,12 +176,12 @@ def test_transport_failures_are_ollama_errors(failure):
 def test_damaged_keyword_index_says_how_to_recover(root, indexed, capsys):
     database = root / ".mini-rag" / "chroma" / "keywords.sqlite3"
     database.write_bytes(b"corrupt" * 200)
-    err = error_of(capsys, ["status", *indexed])
+    err = error_of(capsys, ["ask", "q", *indexed])
     assert "keywords.sqlite3" in err and "delete" in err.lower()
 
     database.unlink()  # following the advice works
-    assert main(["status", *indexed]) == 0
-    assert "Indexed chunks: 2" in capsys.readouterr().out
+    assert main(["index", *indexed]) == 0
+    assert "Files unchanged: 2" in capsys.readouterr().out
 
 
 def test_damaged_vector_database_is_reported(root, args):

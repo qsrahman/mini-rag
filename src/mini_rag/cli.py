@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import sys
 from collections.abc import Sequence
@@ -27,7 +28,7 @@ from mini_rag.project import Project, init_project, open_project
 from mini_rag.rag import RagService
 from mini_rag.reranker import LlmReranker
 from mini_rag.retriever import Retriever
-from mini_rag.vector_store import VectorStore
+from mini_rag.vector_store import VectorStore, inspect_index
 
 
 @dataclass
@@ -141,23 +142,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _settings_from_args(args: argparse.Namespace) -> Settings:
-    project = open_project(args.project)
-    overrides = {
-        key: getattr(args, key, None)
-        for key in (
-            "llm_model",
-            "embedding_model",
-            "ollama_host",
-            "collection_name",
-            "top_k",
-            "retrieval",
-            "rerank",
-            "think",
-            "chunk_size",
-            "chunk_overlap",
-        )
-    }
+def _settings_from_args(args: argparse.Namespace, project: Project) -> Settings:
+    # Any option whose destination is named like a setting overrides it.
+    overrides = {f.name: getattr(args, f.name, None) for f in dataclasses.fields(Settings)}
     return Settings.for_project(project).with_overrides(**overrides)
 
 
@@ -185,8 +172,8 @@ def _check_rebuildable(root: Path, ignore: Sequence[str]) -> None:
         )
 
 
-def run_index(args: argparse.Namespace, settings: Settings) -> int:
-    root = settings.project_root
+def run_index(args: argparse.Namespace, settings: Settings, project: Project) -> int:
+    root = project.root
     directory = root if args.directory is None else args.directory.resolve()
     # Check before building services: --rebuild must not drop data for a bad argument.
     if not directory.is_dir():
@@ -199,16 +186,16 @@ def run_index(args: argparse.Namespace, settings: Settings) -> int:
             "Run `mini-rag index --rebuild`, or leave out --rebuild to re-index just that folder."
         )
     # Read everything that can fail before --rebuild drops the existing index.
-    ignore = Project(root).ignore_patterns()
+    ignore = project.ignore_patterns()
     if args.rebuild:
         _check_rebuildable(root, ignore)
     services = build_services(settings, rebuild=args.rebuild)
     indexer = Indexer(
         services.embedder,
         services.store,
+        root,
         settings.chunk_size,
         settings.effective_chunk_overlap,
-        root,
         ignore,
     )
     if args.chunk_size is not None or args.chunk_overlap is not None:
@@ -235,7 +222,7 @@ def run_index(args: argparse.Namespace, settings: Settings) -> int:
     return 1 if summary.failed or summary.unreadable else 0
 
 
-def run_ask(args: argparse.Namespace, settings: Settings) -> int:
+def run_ask(args: argparse.Namespace, settings: Settings, project: Project) -> int:
     services = build_services(settings)
     where = {"source": args.source} if args.source else None
     with working("Searching documents and generating an answer..."):
@@ -244,18 +231,18 @@ def run_ask(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
-def run_chat(args: argparse.Namespace, settings: Settings) -> int:
+def run_chat(args: argparse.Namespace, settings: Settings, project: Project) -> int:
     services = build_services(settings)
     return ChatShell(services.rag, settings, services.store.count).run()
 
 
-def run_status(args: argparse.Namespace, settings: Settings) -> int:
-    services = build_services(settings)
-    print(format_status(settings, services.store.count()))
+def run_status(args: argparse.Namespace, settings: Settings, project: Project) -> int:
+    chunks, indexed_model = inspect_index(settings.vector_db_path, settings.collection_name)
+    print(format_status(settings, chunks, indexed_model))
     return 0
 
 
-def run_eval(args: argparse.Namespace, settings: Settings) -> int:
+def run_eval(args: argparse.Namespace, settings: Settings, project: Project) -> int:
     if args.k <= 0:
         raise MiniRagError(f"--k must be positive, got {args.k}")
     if args.generate is not None and args.generate <= 0:
@@ -303,7 +290,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "init":
             return run_init(args)
-        return handlers[args.command](args, _settings_from_args(args))
+        project = open_project(args.project)
+        return handlers[args.command](args, _settings_from_args(args, project), project)
     except (MiniRagError, OSError) as exc:  # OSError: unwritable folder, full disk, ...
         print(f"error: {exc}", file=sys.stderr)
         return 1

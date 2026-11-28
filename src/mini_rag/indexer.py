@@ -59,13 +59,12 @@ class Indexer:
         self,
         embedder: Embedder,
         store: VectorStore,
+        root: Path,
         chunk_size: int,
         chunk_overlap: int,
-        root: Path | None = None,
         ignore: Sequence[str] = (),
     ) -> None:
-        """`root` is the project folder that document paths are relative to; without it, the
-        directory being indexed is its own root."""
+        """`root` is the project folder that document paths are relative to."""
         self._embedder = embedder
         self._store = store
         self._chunk_size = chunk_size
@@ -75,7 +74,7 @@ class Indexer:
 
     def index_directory(self, directory: Path, prune: bool = False) -> IndexSummary:
         directory = directory.resolve()
-        root = (self._root or directory).resolve()
+        root = self._root.resolve()
         if not directory.is_relative_to(root):
             raise MiniRagError(f"{directory} is outside the project {root}")
         found = scan(directory, root, self._ignore)

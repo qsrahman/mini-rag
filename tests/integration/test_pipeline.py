@@ -34,8 +34,8 @@ def store(tmp_path, embedder):
     return VectorStore(tmp_path / "db", "docs", embedder.model)
 
 
-def make_indexer(embedder, store, size=200, overlap=20, root=None, ignore=()):
-    return Indexer(embedder, store, size, overlap, root, ignore)
+def make_indexer(embedder, store, root, size=200, overlap=20, ignore=()):
+    return Indexer(embedder, store, root, size, overlap, ignore)
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ def test_query_commands_share_model_options():
 
 
 def test_index_summary_and_failures(docs, embedder, store):
-    summary = make_indexer(embedder, store).index_directory(docs)
+    summary = make_indexer(embedder, store, docs).index_directory(docs)
     assert summary.discovered == 6
     assert summary.indexed == 4
     assert summary.unchanged == 0
@@ -69,7 +69,7 @@ def test_index_summary_and_failures(docs, embedder, store):
 
 
 def test_second_run_is_a_no_op(docs, embedder, store):
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     embedder.calls.clear()
     summary = indexer.index_directory(docs)
@@ -79,7 +79,7 @@ def test_second_run_is_a_no_op(docs, embedder, store):
 
 
 def test_modified_file_is_reindexed_without_duplicates(docs, embedder, store):
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     (docs / "cooking.txt").write_text("Rice should be rinsed before steaming in a covered pot.")
     summary = indexer.index_directory(docs)
@@ -92,7 +92,7 @@ def test_modified_file_is_reindexed_without_duplicates(docs, embedder, store):
 
 
 def test_failed_embedding_keeps_old_content(docs, embedder, store):
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     (docs / "cooking.txt").write_text("Brand new text about bread.")
     embedder.embed = MagicMock(side_effect=RuntimeError("embedder down"))
@@ -104,13 +104,13 @@ def test_failed_embedding_keeps_old_content(docs, embedder, store):
 
 
 def test_chunking_settings_change_triggers_reindex(docs, embedder, store):
-    make_indexer(embedder, store, size=200).index_directory(docs)
-    summary = make_indexer(embedder, store, size=100, overlap=10).index_directory(docs)
+    make_indexer(embedder, store, docs, size=200).index_directory(docs)
+    summary = make_indexer(embedder, store, docs, size=100, overlap=10).index_directory(docs)
     assert summary.indexed == 4
 
 
 def test_retrieval_and_answer_with_sources(docs, embedder, store):
-    make_indexer(embedder, store).index_directory(docs)
+    make_indexer(embedder, store, docs).index_directory(docs)
     generator = MagicMock()
     generator.generate.return_value = "Penguins cannot fly [S1]."
     rag = RagService(Retriever(embedder, store, top_k=2), generator)
@@ -125,7 +125,7 @@ def test_retrieval_and_answer_with_sources(docs, embedder, store):
 
 
 def test_source_filter(docs, embedder, store):
-    make_indexer(embedder, store).index_directory(docs)
+    make_indexer(embedder, store, docs).index_directory(docs)
     hits = Retriever(embedder, store).retrieve("water", top_k=5, where={"source": "space.md"})
     assert {h.chunk.metadata["source"] for h in hits} == {"space.md"}
 
@@ -172,7 +172,7 @@ def test_unreadable_file_is_reported_not_fatal(tmp_path, embedder, store):
     locked.write_text("secret")
     locked.chmod(0)
     try:
-        summary = make_indexer(embedder, store).index_directory(root)
+        summary = make_indexer(embedder, store, root).index_directory(root)
     finally:
         locked.chmod(0o644)
     assert summary.indexed == 1
@@ -203,7 +203,7 @@ def test_store_sample_is_reproducible_and_skips_tiny_chunks(tmp_path, embedder):
     for i in range(6):
         (root / f"f{i}.txt").write_text(f"File {i} says " + f"words about topic number {i}. " * 20)
     (root / "tiny.txt").write_text("short")
-    make_indexer(embedder, store, size=400, overlap=0).index_directory(root)
+    make_indexer(embedder, store, root, size=400, overlap=0).index_directory(root)
 
     first = store.sample(3, seed=1)
     assert [cid for cid, _ in first] == [cid for cid, _ in store.sample(3, seed=1)]
@@ -251,7 +251,7 @@ def test_hybrid_finds_exact_identifier_that_dense_ranks_poorly(tmp_path):
     for i in range(30):
         (root / f"n{i}.txt").write_text(f"Generic note {i} about nothing in particular here.")
     (root / "target.txt").write_text("Troubleshooting: error code ZX9041 means the cache is full.")
-    make_indexer(embedder, store).index_directory(root)
+    make_indexer(embedder, store, root).index_directory(root)
 
     hybrid = Retriever(embedder, store, top_k=3, mode="hybrid").retrieve("what is ZX9041?")
     assert "target.txt" in [r.chunk.metadata["source"] for r in hybrid]
@@ -260,7 +260,7 @@ def test_hybrid_finds_exact_identifier_that_dense_ranks_poorly(tmp_path):
 def test_keyword_index_follows_replacement_and_self_heals(docs, embedder, tmp_path):
     db = tmp_path / "db"
     store = VectorStore(db, "docs", embedder.model)
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     (docs / "cooking.txt").write_text("Rice should be rinsed before steaming in a covered pot.")
     indexer.index_directory(docs)
@@ -278,7 +278,7 @@ def test_prune_removes_only_deleted_files_under_the_directory(docs, embedder, st
     other = tmp_path / "other"
     other.mkdir()
     (other / "keep.txt").write_text("Content from a different indexed directory.")
-    indexer = make_indexer(embedder, store, root=tmp_path)
+    indexer = make_indexer(embedder, store, tmp_path)
     indexer.index_directory(docs)
     indexer.index_directory(other)
     before = store.count()
@@ -296,7 +296,7 @@ def test_prune_removes_only_deleted_files_under_the_directory(docs, embedder, st
 
 
 def test_prune_without_flag_keeps_deleted_files(docs, embedder, store):
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     (docs / "cooking.txt").unlink()
     assert indexer.index_directory(docs).pruned == 0
@@ -304,7 +304,7 @@ def test_prune_without_flag_keeps_deleted_files(docs, embedder, store):
 
 
 def test_prune_keeps_files_that_exist_but_fail_to_load(docs, embedder, store):
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     (docs / "cooking.txt").write_bytes(b"\xff\xfe\x00bad")  # now unreadable as text
     summary = indexer.index_directory(docs, prune=True)
@@ -313,7 +313,7 @@ def test_prune_keeps_files_that_exist_but_fail_to_load(docs, embedder, store):
 
 
 def test_prune_refuses_to_wipe_when_directory_has_no_supported_files(docs, embedder, store):
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     for f in docs.iterdir():
         f.unlink()
@@ -323,8 +323,10 @@ def test_prune_refuses_to_wipe_when_directory_has_no_supported_files(docs, embed
 
 
 def test_prune_removes_files_that_became_ignored(docs, embedder, store):
-    make_indexer(embedder, store).index_directory(docs)
-    summary = make_indexer(embedder, store, ignore=["cooking.*"]).index_directory(docs, prune=True)
+    make_indexer(embedder, store, docs).index_directory(docs)
+    summary = make_indexer(embedder, store, docs, ignore=["cooking.*"]).index_directory(
+        docs, prune=True
+    )
     assert summary.pruned == 1 and store.count() == 3
 
 
@@ -418,7 +420,7 @@ def test_rebuild_naming_the_project_folder_is_allowed(docs, project, capsys):
 
 @pytest.mark.parametrize("prune", [False, True])
 def test_emptied_files_stop_answering_with_old_content(docs, embedder, store, prune):
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     (docs / "cooking.txt").write_text("   \n")
     make_pdf(docs / "birds.pdf", [""])  # e.g. replaced by a scan without a text layer
@@ -433,7 +435,7 @@ def test_emptied_files_stop_answering_with_old_content(docs, embedder, store, pr
 
 
 def test_unparseable_files_keep_their_old_content(docs, embedder, store):
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, docs)
     indexer.index_directory(docs)
     (docs / "birds.pdf").write_bytes(b"half written garbage")
     indexer.index_directory(docs, prune=True)
@@ -460,7 +462,7 @@ def test_thinking_reaches_the_generator(docs, project, monkeypatch, config, flag
         return MagicMock()
 
     monkeypatch.setattr("mini_rag.cli.Generator", fake_generator)
-    assert main(["status", *project, *flags]) == 0
+    assert main(["ask", "q", *project, *flags]) == 0
     assert seen["think"] is expected
 
 

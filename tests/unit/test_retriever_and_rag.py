@@ -80,9 +80,13 @@ def test_ask_passes_context_to_llm_and_returns_retrieved_sources():
     retriever, generator = MagicMock(), MagicMock()
     retriever.retrieve.return_value = [retrieved("Supervised learning uses labels.", "ml.pdf", 12)]
     generator.generate.return_value = "It uses labelled data [S1]."
-    answer = RagService(retriever, generator).ask("What is supervised learning?", top_k=3)
+    answer = RagService(retriever, generator).ask(
+        "What is supervised learning?", where={"source": "ml.pdf"}
+    )
 
-    retriever.retrieve.assert_called_once_with("What is supervised learning?", top_k=3, where=None)
+    retriever.retrieve.assert_called_once_with(
+        "What is supervised learning?", where={"source": "ml.pdf"}
+    )
     question, context = generator.generate.call_args.args
     assert question == "What is supervised learning?"
     assert "Supervised learning uses labels." in context and 'id="S1"' in context

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,45 @@ only when the precise words matter.
 
 class ConfigError(MiniRagError):
     pass
+
+
+def env_variable(setting: str) -> str:
+    return f"RAG_{setting.upper()}"
+
+
+def _text(variable: str, raw: str) -> str:
+    return raw
+
+
+def _integer(variable: str, raw: str) -> int:
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigError(f"{variable} must be an integer, got {raw!r}") from None
+
+
+def _flag(variable: str, raw: str) -> bool:
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+# The settings that can come from the environment (RAG_<NAME>) and how each is read.
+# Adding one also means: PROJECT_CONFIG_KEYS (if a project may set it), .env.example and the
+# README table; tests check that these agree.
+_ENV_PARSERS: dict[str, Callable[[str, str], Any]] = {
+    "llm_model": _text,
+    "embedding_model": _text,
+    "ollama_host": _text,
+    "chunk_size": _integer,
+    "chunk_overlap": _integer,
+    "top_k": _integer,
+    "retrieval": _text,
+    "rerank": _flag,
+    "think": _flag,
+    "num_ctx": _integer,
+    "collection_name": _text,
+    "system_prompt": _text,
+}
+ENV_VARIABLES = frozenset(env_variable(name) for name in _ENV_PARSERS)
 
 
 @dataclass(frozen=True)
@@ -92,36 +131,12 @@ class Settings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
         env = os.environ if env is None else env
-        defaults = cls()
-
-        def text(key: str, default: str) -> str:
-            return env.get(key, default)
-
-        def integer(key: str, default: int) -> int:
-            raw = env.get(key)
-            if raw is None:
-                return default
-            try:
-                return int(raw)
-            except ValueError:
-                raise ConfigError(f"{key} must be an integer, got {raw!r}") from None
-
-        def flag(key: str) -> bool:
-            return env.get(key, "false").strip().lower() in ("1", "true", "yes", "on")
-
         return cls(
-            llm_model=text("RAG_LLM_MODEL", defaults.llm_model),
-            embedding_model=text("RAG_EMBEDDING_MODEL", defaults.embedding_model),
-            ollama_host=text("RAG_OLLAMA_HOST", defaults.ollama_host),
-            chunk_size=integer("RAG_CHUNK_SIZE", defaults.chunk_size),
-            chunk_overlap=(integer("RAG_CHUNK_OVERLAP", 0) if "RAG_CHUNK_OVERLAP" in env else None),
-            top_k=integer("RAG_TOP_K", defaults.top_k),
-            retrieval=text("RAG_RETRIEVAL", defaults.retrieval),
-            rerank=flag("RAG_RERANK"),
-            think=flag("RAG_THINK"),
-            num_ctx=integer("RAG_NUM_CTX", defaults.num_ctx),
-            collection_name=text("RAG_COLLECTION_NAME", defaults.collection_name),
-            system_prompt=text("RAG_SYSTEM_PROMPT", defaults.system_prompt),
+            **{
+                name: parse(variable, env[variable])
+                for name, parse in _ENV_PARSERS.items()
+                if (variable := env_variable(name)) in env
+            }
         )
 
     @classmethod

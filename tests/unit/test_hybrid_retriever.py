@@ -4,7 +4,6 @@ import pytest
 
 from mini_rag.models import Chunk, RetrievedChunk
 from mini_rag.retriever import Retriever, reciprocal_rank_fusion
-from mini_rag.vector_store import chunk_id
 
 
 def rc(name: str, distance: float | None = None) -> RetrievedChunk:
@@ -13,7 +12,7 @@ def rc(name: str, distance: float | None = None) -> RetrievedChunk:
 
 
 def cid(name: str) -> str:
-    return chunk_id(rc(name).chunk.metadata)
+    return rc(name).chunk.id
 
 
 def test_rrf_rewards_agreement_between_rankings():
@@ -41,7 +40,7 @@ def make(embedder, dense, keyword, **kw):
 def test_hybrid_fuses_and_truncates_to_top_k(embedder):
     retriever, _ = make(embedder, [rc("a", 0.1), rc("b", 0.2)], [rc("c"), rc("b")], top_k=2)
     results = retriever.retrieve("q")
-    assert [chunk_id(r.chunk.metadata) for r in results] == [cid("b"), cid("a")]
+    assert [r.chunk.id for r in results] == [cid("b"), cid("a")]
 
 
 def test_hybrid_keeps_dense_distance_when_both_found_a_chunk(embedder):

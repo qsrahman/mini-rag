@@ -61,7 +61,13 @@ def format_answer(answer: Answer) -> str:
     return "\n".join(lines)
 
 
-def format_status(settings: Settings, chunk_count: int) -> str:
+def format_status(settings: Settings, chunk_count: int, indexed_model: str | None = None) -> str:
+    warning = ""
+    if indexed_model is not None and indexed_model != settings.embedding_model:
+        warning = (
+            f"\nWarning: the index was built with embedding model {indexed_model!r}. "
+            "Switch back, or run `mini-rag index --rebuild`."
+        )
     return (
         f"Project: {settings.project_root}\n"
         f"Model: {settings.llm_model}\n"
@@ -71,6 +77,7 @@ def format_status(settings: Settings, chunk_count: int) -> str:
         f"Database: {settings.vector_db_path}\n"
         f"Collection: {settings.collection_name}\n"
         f"Indexed chunks: {chunk_count}"
+        f"{warning}"
     )
 
 

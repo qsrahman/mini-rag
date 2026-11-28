@@ -17,7 +17,6 @@ from pathlib import Path
 
 from mini_rag.models import Chunk, MiniRagError, RetrievedChunk
 from mini_rag.ollama_utils import make_client, ollama_errors
-from mini_rag.vector_store import chunk_id
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +147,7 @@ def evaluate(
             continue  # chunking or content changed since the set was generated
         scored += 1
         results = retrieve(q.question, k)
-        chunk_rank = next(
-            (i for i, r in enumerate(results, 1) if chunk_id(r.chunk.metadata) == q.chunk_id), None
-        )
+        chunk_rank = next((i for i, r in enumerate(results, 1) if r.chunk.id == q.chunk_id), None)
         doc_rank = next(
             (
                 i

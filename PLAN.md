@@ -7,7 +7,7 @@ Not a framework. All processing, embedding and inference stay on the machine.
 
 ## Status
 
-The foundation described below is implemented and verified: 264 unit/integration tests pass, ruff
+The foundation described below is implemented and verified: 273 unit/integration tests pass, ruff
 and `mypy --strict` are clean.
 
 `uv run pytest -m live` (9 tests, about 30 s) passed against local Ollama (`qwen3.5:9b-mlx`,
@@ -39,6 +39,8 @@ exits 130.
 | `--rebuild` scans first and refuses on unreadable folders or no files | A broken ignore file, an unreadable folder or an empty directory each wiped the index |
 | Third-party errors become `MiniRagError`s at the module that calls them | Users get a message and a remedy instead of a traceback |
 | CI on Linux and macOS with a locked sync; actions pinned to commits | Catches breakage on push without needing Ollama |
+| `status` inspects the index without opening the store | It should work, and explain, when the embedding model differs, and not create files |
+| Settings read from one parser table, with tests for the other places they appear | Adding a setting touched many files with nothing to catch an omission |
 | Chunk ID embeds content hash | New chunks never overwrite old ones, so replacement is add-then-delete and failure-safe |
 | Fingerprint includes chunk size/overlap | Changing chunking re-indexes without `--rebuild` |
 | `INDEX_VERSION` in the fingerprint, pinned to a digest of loader and chunker output by a test | Code changes reach already indexed files; version 1 leaves existing fingerprints unchanged |

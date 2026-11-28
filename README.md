@@ -241,7 +241,7 @@ mini-rag index                 # the whole project
 mini-rag index leases          # one folder inside the project
 mini-rag index --rebuild       # drop the collection and re-index
 mini-rag index --prune         # also drop documents that were deleted or are now ignored
-mini-rag status                # project, models and number of indexed chunks
+mini-rag status                # project, models and chunk count (changes nothing)
 ```
 
 `--rebuild` drops the project's whole collection before indexing, so it is refused together with a

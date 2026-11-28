@@ -13,7 +13,6 @@ from mini_rag.evaluation import (
     write_questions,
 )
 from mini_rag.models import Chunk, RetrievedChunk
-from mini_rag.vector_store import chunk_id
 
 
 def make_chunk(doc: str, index: int, text: str = "x") -> Chunk:
@@ -25,7 +24,7 @@ def hit(chunk: Chunk) -> RetrievedChunk:
 
 
 def question(chunk: Chunk, text: str = "q?") -> EvalQuestion:
-    return EvalQuestion(text, chunk_id(chunk.metadata), str(chunk.metadata["document_id"]), "f.txt")
+    return EvalQuestion(text, chunk.id, str(chunk.metadata["document_id"]), "f.txt")
 
 
 @pytest.mark.parametrize(
@@ -46,10 +45,8 @@ def test_generate_questions_skips_empty_and_keeps_provenance():
     a, b = make_chunk("d1", 0, "alpha text"), make_chunk("d2", 3, "beta text")
     a = Chunk(a.text, {**a.metadata, "source": "a.pdf", "page": 4})
     answers = {"alpha text": "About alpha?", "beta text": ""}
-    result = generate_questions(
-        [(chunk_id(a.metadata), a), (chunk_id(b.metadata), b)], answers.__getitem__
-    )
-    assert result == [EvalQuestion("About alpha?", chunk_id(a.metadata), "d1", "a.pdf", 4)]
+    result = generate_questions([(a.id, a), (b.id, b)], answers.__getitem__)
+    assert result == [EvalQuestion("About alpha?", a.id, "d1", "a.pdf", 4)]
 
 
 def test_question_file_roundtrip(tmp_path):
@@ -82,7 +79,7 @@ def test_metrics_for_known_ranks():
         "q1": [hit(other), hit(other), hit(gold[1])],
         "q2": [hit(other), hit(make_chunk("d1", 99))],
     }
-    report = evaluate(qs, lambda q, k: results[q][:k], {chunk_id(g.metadata) for g in gold}, k=5)
+    report = evaluate(qs, lambda q, k: results[q][:k], {g.id for g in gold}, k=5)
 
     assert report.questions == 3 and report.skipped == 0
     assert report.chunk_hit == {1: 1 / 3, 3: 2 / 3, 5: 2 / 3}
@@ -95,7 +92,7 @@ def test_metrics_for_known_ranks():
 def test_questions_with_vanished_chunks_are_skipped():
     live, gone = make_chunk("d1", 0), make_chunk("d1", 1)
     qs = [question(live, "a"), question(gone, "b")]
-    report = evaluate(qs, lambda q, k: [hit(live)], {chunk_id(live.metadata)}, k=3)
+    report = evaluate(qs, lambda q, k: [hit(live)], {live.id}, k=3)
     assert (report.questions, report.skipped) == (1, 1)
     assert report.chunk_hit[1] == 1.0
     assert "1 skipped" in format_report(report)
@@ -109,5 +106,5 @@ def test_all_questions_stale_is_an_error():
 
 def test_cutoffs_never_exceed_k():
     chunk = make_chunk("d1", 0)
-    report = evaluate([question(chunk)], lambda q, k: [hit(chunk)], {chunk_id(chunk.metadata)}, k=2)
+    report = evaluate([question(chunk)], lambda q, k: [hit(chunk)], {chunk.id}, k=2)
     assert list(report.chunk_hit) == [1, 2]

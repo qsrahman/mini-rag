@@ -62,10 +62,8 @@ class RagService:
         self._retriever = retriever
         self._generator = generator
 
-    def ask(
-        self, question: str, top_k: int | None = None, where: dict[str, Any] | None = None
-    ) -> Answer:
-        retrieved = self._retriever.retrieve(question, top_k=top_k, where=where)
+    def ask(self, question: str, where: dict[str, Any] | None = None) -> Answer:
+        retrieved = self._retriever.retrieve(question, where=where)
         if not retrieved:
             return Answer(text=NO_CONTENT_MESSAGE, sources=[])
         sources = build_sources(retrieved)

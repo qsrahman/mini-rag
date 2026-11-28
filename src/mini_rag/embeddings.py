@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from typing import Protocol
 
 import ollama
 
 from mini_rag.ollama_utils import OllamaError, make_client, ollama_errors
-
-logger = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):

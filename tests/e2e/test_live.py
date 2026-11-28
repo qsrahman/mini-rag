@@ -49,11 +49,15 @@ def live(tmp_path_factory):
     make_pdf(docs / "peaks.pdf", ["Intro page about nothing.", "Mount Zork is 4000 metres tall."])
 
     project, _ = init_project(docs)
-    settings = Settings.for_project(project, {})
+    settings = Settings.for_project(project, {}).with_overrides(top_k=3)
     _require_ollama(settings)
     services = build_services(settings)
     summary = Indexer(
-        services.embedder, services.store, settings.chunk_size, settings.effective_chunk_overlap
+        services.embedder,
+        services.store,
+        docs,
+        settings.chunk_size,
+        settings.effective_chunk_overlap,
     ).index_directory(docs)
     assert summary.failed == []
     assert summary.indexed == 4
@@ -73,7 +77,7 @@ def test_answers_are_grounded_and_cited(
     live, question, expected_source, expected_page, expected_text
 ):
     _, services, _ = live
-    answer = services.rag.ask(question, top_k=3)
+    answer = services.rag.ask(question)
     assert expected_text in answer.text.lower().replace(",", "")
     match = [s for s in answer.sources if s.name == expected_source]
     assert match, f"{expected_source} not among retrieved sources: {answer.sources}"
@@ -84,7 +88,7 @@ def test_answers_are_grounded_and_cited(
 
 def test_unanswerable_question_is_declined(live):
     _, services, _ = live
-    answer = services.rag.ask("Who won the 1998 football World Cup?", top_k=3)
+    answer = services.rag.ask("Who won the 1998 football World Cup?")
     assert "france" not in answer.text.lower()
     assert re.search(
         r"cannot|can't|not (found|contain|mention|provide)|no information|unable",
@@ -95,7 +99,11 @@ def test_unanswerable_question_is_declined(live):
 def test_second_index_run_is_a_no_op(live):
     settings, services, docs = live
     summary = Indexer(
-        services.embedder, services.store, settings.chunk_size, settings.effective_chunk_overlap
+        services.embedder,
+        services.store,
+        docs,
+        settings.chunk_size,
+        settings.effective_chunk_overlap,
     ).index_directory(docs)
     assert (summary.indexed, summary.unchanged) == (0, 4)
 

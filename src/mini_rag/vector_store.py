@@ -17,7 +17,7 @@ from chromadb.config import Settings as ChromaSettings
 from chromadb.errors import ChromaError, InternalError, InvalidArgumentError, NotFoundError
 
 from mini_rag.keyword_index import KeywordIndex
-from mini_rag.models import Chunk, Metadata, MiniRagError, RetrievedChunk
+from mini_rag.models import Chunk, MiniRagError, RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,9 @@ class IncompatibleEmbeddingModelError(VectorStoreError):
     pass
 
 
-def chunk_id(metadata: Metadata) -> str:
-    """Stable and unique: changes whenever the file content or chunking changes."""
-    return (
-        f"{metadata['document_id']}-{str(metadata['content_hash'])[:12]}-{metadata['chunk_index']}"
-    )
+def _to_chunk(text: str, metadata: Mapping[str, Any]) -> Chunk:
+    """A stored record as our type (Chroma allows more value types than we write)."""
+    return Chunk(text, {k: v for k, v in metadata.items() if isinstance(v, str | int)})
 
 
 def _keyword_table(collection_name: str) -> str:
@@ -47,6 +45,43 @@ def _keyword_table(collection_name: str) -> str:
 
 def _keyword_row(cid: str, text: str, metadata: Mapping[str, Any]) -> tuple[str, str, str, str]:
     return cid, str(metadata.get("source", "")), str(metadata.get("document_id", "")), text
+
+
+@contextlib.contextmanager
+def _chroma_errors(path: Path) -> Iterator[None]:
+    try:
+        yield
+    except ChromaError as exc:
+        raise VectorStoreError(
+            f"Vector database error in {path}: {exc}. If it is damaged, delete that "
+            "folder and run `mini-rag index`."
+        ) from exc
+
+
+def _new_client(path: Path) -> ClientAPI:
+    # Chroma's settings would otherwise be read from a `.env` in the current folder, letting a
+    # downloaded folder reconfigure it, including which classes it imports. The Rust backend is
+    # pinned because the Python one unpickles files found in the database directory.
+    chroma_settings = ChromaSettings(  # type: ignore[call-arg]  # pydantic-settings arg
+        _env_file=None,
+        chroma_api_impl="chromadb.api.rust.RustBindingsAPI",
+        anonymized_telemetry=False,
+    )
+    return chromadb.PersistentClient(path=str(path), settings=chroma_settings)
+
+
+def inspect_index(path: Path, collection_name: str) -> tuple[int, str | None]:
+    """(chunk count, embedding model it was built with) without creating or changing anything
+    in the index; (0, None) if there is none."""
+    if not (path / "chroma.sqlite3").is_file():
+        return 0, None
+    with _chroma_errors(path):
+        try:
+            collection = _new_client(path).get_collection(collection_name)
+        except NotFoundError:
+            return 0, None
+        model = (collection.metadata or {}).get("embedding_model")
+        return collection.count(), None if model is None else str(model)
 
 
 class VectorStore:
@@ -63,26 +98,16 @@ class VectorStore:
         self._keywords = KeywordIndex(path / "keywords.sqlite3", _keyword_table(collection_name))
         # Read before loading anything, so a change made while we load is not missed.
         self._seen_version = self._keywords.data_version()
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             self._open(rebuild)
         self._check_embedding_model()
         if rebuild:
             self._keywords.clear()
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             self._sync_keywords()
 
-    @contextlib.contextmanager
-    def _chroma_errors(self) -> Iterator[None]:
-        try:
-            yield
-        except ChromaError as exc:
-            raise VectorStoreError(
-                f"Vector database error in {self._path}: {exc}. If it is damaged, delete that "
-                "folder and run `mini-rag index`."
-            ) from exc
-
     def _open(self, rebuild: bool) -> None:
-        self._client = self._new_client()
+        self._client = _new_client(self._path)
         if rebuild:
             self._delete_collection()
         try:
@@ -94,17 +119,6 @@ class VectorStore:
             raise VectorStoreError(
                 f"Invalid collection name {self._collection_name!r}: {exc}"
             ) from exc
-
-    def _new_client(self) -> ClientAPI:
-        # Chroma's settings would otherwise be read from a `.env` in the current folder, letting a
-        # downloaded folder reconfigure it, including which classes it imports. The Rust backend is
-        # pinned because the Python one unpickles files found in the database directory.
-        chroma_settings = ChromaSettings(  # type: ignore[call-arg]  # pydantic-settings arg
-            _env_file=None,
-            chroma_api_impl="chromadb.api.rust.RustBindingsAPI",
-            anonymized_telemetry=False,
-        )
-        return chromadb.PersistentClient(path=str(self._path), settings=chroma_settings)
 
     def _refresh_if_changed(self, force: bool = False) -> None:
         """Reopen ChromaDB after another process (e.g. `index` while `chat` runs) changed it.
@@ -119,7 +133,7 @@ class VectorStore:
         logger.info("Index changed by another process; reopening")
         # close() releases the cached index; a new client alone would reuse it.
         self._client.close()  # type: ignore[attr-defined]  # missing from the ClientAPI stub
-        self._client = self._new_client()
+        self._client = _new_client(self._path)
         try:
             self._collection = self._client.get_collection(self._collection_name)
         except NotFoundError as exc:
@@ -159,25 +173,21 @@ class VectorStore:
                 "or switch back to the original model."
             )
 
-    @property
-    def collection_name(self) -> str:
-        return self._collection_name
-
     def count(self) -> int:
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             self._refresh_if_changed()
             return self._collection.count()
 
     def chunk_ids(self) -> set[str]:
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             return set(self._collection.get(include=[])["ids"])
 
     def sample(self, n: int, seed: int = 0, min_chars: int = 200) -> list[tuple[str, Chunk]]:
         """Reproducible random sample of (id, chunk), skipping tiny chunks."""
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             stored = self._collection.get(include=["documents", "metadatas"])
         pool = sorted(
-            (cid, Chunk(text, {k: v for k, v in meta.items() if isinstance(v, str | int)}))
+            (cid, _to_chunk(text, meta))
             for cid, text, meta in zip(
                 stored["ids"], stored["documents"] or [], stored["metadatas"] or [], strict=True
             )
@@ -187,7 +197,7 @@ class VectorStore:
 
     def indexed_documents(self) -> dict[str, str]:
         """document_id -> source path relative to the project."""
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             metadatas = self._collection.get(include=["metadatas"])["metadatas"] or []
         return {str(m["document_id"]): str(m["source"]) for m in metadatas}
 
@@ -195,7 +205,7 @@ class VectorStore:
         """Remove documents; returns the number of chunks removed."""
         removed = 0
         for document_id in document_ids:
-            with self._chroma_errors():
+            with _chroma_errors(self._path):
                 ids = self._collection.get(where={"document_id": document_id}, include=[])["ids"]
                 if ids:
                     self._collection.delete(ids=ids)
@@ -206,7 +216,7 @@ class VectorStore:
 
     def is_current(self, document_id: str, content_hash: str) -> bool:
         """True if the document is indexed and every stored chunk matches `content_hash`."""
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             stored = self._collection.get(where={"document_id": document_id}, include=["metadatas"])
         metadatas = stored["metadatas"] or []
         return bool(metadatas) and all(m.get("content_hash") == content_hash for m in metadatas)
@@ -222,8 +232,8 @@ class VectorStore:
         """
         if len(chunks) != len(embeddings):
             raise VectorStoreError("chunks and embeddings differ in length")
-        ids = [chunk_id(c.metadata) for c in chunks]
-        with self._chroma_errors():
+        ids = [c.id for c in chunks]
+        with _chroma_errors(self._path):
             for start in range(0, len(ids), _WRITE_BATCH):
                 end = start + _WRITE_BATCH
                 self._collection.upsert(
@@ -245,7 +255,7 @@ class VectorStore:
         self, text: str, top_k: int, where: dict[str, Any] | None = None
     ) -> list[RetrievedChunk]:
         """BM25 matches (no distance). Only `source` / `document_id` equality filters work."""
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             self._refresh_if_changed()
         filters = {k: v for k, v in (where or {}).items() if isinstance(v, str)}
         if len(filters) != len(where or {}):
@@ -257,10 +267,10 @@ class VectorStore:
             raise VectorStoreError(str(exc)) from exc
         if not ids:
             return []
-        with self._chroma_errors():
+        with _chroma_errors(self._path):
             stored = self._collection.get(ids=ids, include=["documents", "metadatas"])
         by_id = {
-            cid: Chunk(doc, {k: v for k, v in meta.items() if isinstance(v, str | int)})
+            cid: _to_chunk(doc, meta)
             for cid, doc, meta in zip(
                 stored["ids"], stored["documents"] or [], stored["metadatas"] or [], strict=True
             )
@@ -279,7 +289,7 @@ class VectorStore:
         for attempt in range(_READ_ATTEMPTS):
             if attempt:
                 time.sleep(_RETRY_DELAY * attempt)
-            with self._chroma_errors():  # anything not retried below
+            with _chroma_errors(self._path):  # anything not retried below
                 try:
                     self._refresh_if_changed(force=attempt > 0)
                     found = self._dense_search(embedding, top_k, where)
@@ -312,12 +322,6 @@ class VectorStore:
         return [
             None
             if text is None or meta is None
-            else RetrievedChunk(
-                chunk=Chunk(
-                    text=text,
-                    metadata={k: v for k, v in meta.items() if isinstance(v, str | int)},
-                ),
-                distance=float(distance),
-            )
+            else RetrievedChunk(_to_chunk(text, meta), float(distance))
             for text, meta, distance in zip(documents, metadatas, distances, strict=True)
         ]

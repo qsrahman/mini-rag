@@ -25,6 +25,12 @@ class Chunk:
     text: str
     metadata: Metadata = field(default_factory=dict)
 
+    @property
+    def id(self) -> str:
+        """Stable and unique: changes whenever the file content or chunking changes."""
+        m = self.metadata
+        return f"{m['document_id']}-{str(m['content_hash'])[:12]}-{m['chunk_index']}"
+
 
 @dataclass(frozen=True)
 class RetrievedChunk:

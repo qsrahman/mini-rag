@@ -36,6 +36,11 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
   `interactive.py` is presentation only and calls `RagService`, the same as `ask`.
 - `embeddings.py` is independent of the vector store. A new embedder only has to satisfy the
   `Embedder` protocol (`model` attribute plus `embed(texts)`).
+- Chunk identity is `Chunk.id`. Settings are read from the environment through `_ENV_PARSERS`
+  in `config.py`; a new one also needs the project allow-list and template if projects may set it,
+  `.env.example` and the README table (`tests/unit/test_settings_consistency.py` checks them). A CLI
+  option overrides the setting its `dest` is named after.
+- `status` is read-only (`inspect_index`): it must not create, repair or reject an index.
 - Expected failures subclass `MiniRagError` and are caught only in `cli.main` and the chat loop
   (`cli.main` also reports `OSError`). Translate third-party errors where they arise: Ollama via
   `ollama_utils`, SQLite in `KeywordIndex`, ChromaDB in `VectorStore`.

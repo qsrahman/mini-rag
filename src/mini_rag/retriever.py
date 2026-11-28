@@ -8,7 +8,7 @@ from typing import Any
 from mini_rag.embeddings import Embedder
 from mini_rag.models import RetrievedChunk
 from mini_rag.reranker import LlmReranker
-from mini_rag.vector_store import VectorStore, chunk_id
+from mini_rag.vector_store import VectorStore
 
 RRF_K = 60  # standard constant from the original RRF paper
 CANDIDATE_FACTOR = 4  # each retriever contributes this many times top_k candidates...
@@ -65,11 +65,11 @@ class Retriever:
         dense = self._store.query(embedding, depth, where)
         keyword = self._store.keyword_query(question, depth, where)
         # Dense results go in last so their distance wins when both retrievers found a chunk.
-        by_id = {chunk_id(r.chunk.metadata): r for r in (*keyword, *dense)}
+        by_id = {r.chunk.id: r for r in (*keyword, *dense)}
         fused = reciprocal_rank_fusion(
             [
-                [chunk_id(r.chunk.metadata) for r in dense],
-                [chunk_id(r.chunk.metadata) for r in keyword],
+                [r.chunk.id for r in dense],
+                [r.chunk.id for r in keyword],
             ]
         )
         return [by_id[cid] for cid in fused[:k]]
