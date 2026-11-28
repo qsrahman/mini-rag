@@ -38,6 +38,7 @@ exits 130.
 | Unreadable subfolders are skipped and reported; `--prune` leaves their documents | One folder must not stop a run, and "could not list" is not "deleted" |
 | `--rebuild` scans first and refuses on unreadable folders or no files | A broken ignore file, an unreadable folder or an empty directory each wiped the index |
 | Third-party errors become `MiniRagError`s at the module that calls them | Users get a message and a remedy instead of a traceback |
+| CI on Linux and macOS with a locked sync; actions pinned to commits | Catches breakage on push without needing Ollama |
 | Chunk ID embeds content hash | New chunks never overwrite old ones, so replacement is add-then-delete and failure-safe |
 | Fingerprint includes chunk size/overlap | Changing chunking re-indexes without `--rebuild` |
 | Embedding model name stored on the collection | Prevents silently mixing incompatible vectors |

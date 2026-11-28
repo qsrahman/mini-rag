@@ -18,6 +18,9 @@ uv run mini-rag --help
 
 Add dependencies with `uv add` / `uv add --dev`; commit `uv.lock`.
 
+CI (`.github/workflows/ci.yml`) runs the checks above except `live` on Linux and macOS with
+`uv sync --locked`. Actions are pinned to commit hashes; update the version comment with the hash.
+
 ## Layout
 
 `src/mini_rag/`: `cli.py` (argparse + wiring), `project.py` (`.mini-rag/` projects), `interactive.py` (prompt_toolkit shell and output

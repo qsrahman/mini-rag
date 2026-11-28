@@ -334,6 +334,10 @@ uv run ruff format .
 uv run mypy src/
 ```
 
+GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs lint, format check, type check and the
+non-live tests on Linux and macOS for pushes to `main` and for pull requests, and fails if
+`uv.lock` is out of date. Live tests need Ollama, so run them locally.
+
 `tests/e2e` runs the real pipeline against Ollama (all four formats, citations, refusal, and
 Ctrl+C during generation in a pty); it skips itself if Ollama or the models are missing.
 Other tests mock Ollama; integration tests use temporary ChromaDB directories and a deterministic fake
