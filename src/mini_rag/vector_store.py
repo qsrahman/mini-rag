@@ -7,14 +7,14 @@ import hashlib
 import logging
 import random
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import chromadb
 from chromadb.api import ClientAPI
 from chromadb.config import Settings as ChromaSettings
-from chromadb.errors import InternalError, InvalidArgumentError, NotFoundError
+from chromadb.errors import ChromaError, InternalError, InvalidArgumentError, NotFoundError
 
 from mini_rag.keyword_index import KeywordIndex
 from mini_rag.models import Chunk, Metadata, MiniRagError, RetrievedChunk
@@ -63,20 +63,37 @@ class VectorStore:
         self._keywords = KeywordIndex(path / "keywords.sqlite3", _keyword_table(collection_name))
         # Read before loading anything, so a change made while we load is not missed.
         self._seen_version = self._keywords.data_version()
+        with self._chroma_errors():
+            self._open(rebuild)
+        self._check_embedding_model()
+        if rebuild:
+            self._keywords.clear()
+        with self._chroma_errors():
+            self._sync_keywords()
+
+    @contextlib.contextmanager
+    def _chroma_errors(self) -> Iterator[None]:
+        try:
+            yield
+        except ChromaError as exc:
+            raise VectorStoreError(
+                f"Vector database error in {self._path}: {exc}. If it is damaged, delete that "
+                "folder and run `mini-rag index`."
+            ) from exc
+
+    def _open(self, rebuild: bool) -> None:
         self._client = self._new_client()
         if rebuild:
             self._delete_collection()
         try:
             self._collection = self._client.get_or_create_collection(
-                name=collection_name,
-                metadata={"hnsw:space": "cosine", "embedding_model": embedding_model},
+                name=self._collection_name,
+                metadata={"hnsw:space": "cosine", "embedding_model": self._embedding_model},
             )
         except InvalidArgumentError as exc:
-            raise VectorStoreError(f"Invalid collection name {collection_name!r}: {exc}") from exc
-        self._check_embedding_model()
-        if rebuild:
-            self._keywords.clear()
-        self._sync_keywords()
+            raise VectorStoreError(
+                f"Invalid collection name {self._collection_name!r}: {exc}"
+            ) from exc
 
     def _new_client(self) -> ClientAPI:
         # Chroma's settings would otherwise be read from a `.env` in the current folder, letting a
@@ -147,15 +164,18 @@ class VectorStore:
         return self._collection_name
 
     def count(self) -> int:
-        self._refresh_if_changed()
-        return self._collection.count()
+        with self._chroma_errors():
+            self._refresh_if_changed()
+            return self._collection.count()
 
     def chunk_ids(self) -> set[str]:
-        return set(self._collection.get(include=[])["ids"])
+        with self._chroma_errors():
+            return set(self._collection.get(include=[])["ids"])
 
     def sample(self, n: int, seed: int = 0, min_chars: int = 200) -> list[tuple[str, Chunk]]:
         """Reproducible random sample of (id, chunk), skipping tiny chunks."""
-        stored = self._collection.get(include=["documents", "metadatas"])
+        with self._chroma_errors():
+            stored = self._collection.get(include=["documents", "metadatas"])
         pool = sorted(
             (cid, Chunk(text, {k: v for k, v in meta.items() if isinstance(v, str | int)}))
             for cid, text, meta in zip(
@@ -167,23 +187,27 @@ class VectorStore:
 
     def indexed_documents(self) -> dict[str, str]:
         """document_id -> source path relative to the project."""
-        metadatas = self._collection.get(include=["metadatas"])["metadatas"] or []
+        with self._chroma_errors():
+            metadatas = self._collection.get(include=["metadatas"])["metadatas"] or []
         return {str(m["document_id"]): str(m["source"]) for m in metadatas}
 
     def delete_documents(self, document_ids: Iterable[str]) -> int:
         """Remove documents; returns the number of chunks removed."""
         removed = 0
         for document_id in document_ids:
-            ids = self._collection.get(where={"document_id": document_id}, include=[])["ids"]
+            with self._chroma_errors():
+                ids = self._collection.get(where={"document_id": document_id}, include=[])["ids"]
+                if ids:
+                    self._collection.delete(ids=ids)
             if ids:
-                self._collection.delete(ids=ids)
                 self._keywords.delete(ids)
                 removed += len(ids)
         return removed
 
     def is_current(self, document_id: str, content_hash: str) -> bool:
         """True if the document is indexed and every stored chunk matches `content_hash`."""
-        stored = self._collection.get(where={"document_id": document_id}, include=["metadatas"])
+        with self._chroma_errors():
+            stored = self._collection.get(where={"document_id": document_id}, include=["metadatas"])
         metadatas = stored["metadatas"] or []
         return bool(metadatas) and all(m.get("content_hash") == content_hash for m in metadatas)
 
@@ -199,18 +223,19 @@ class VectorStore:
         if len(chunks) != len(embeddings):
             raise VectorStoreError("chunks and embeddings differ in length")
         ids = [chunk_id(c.metadata) for c in chunks]
-        for start in range(0, len(ids), _WRITE_BATCH):
-            end = start + _WRITE_BATCH
-            self._collection.upsert(
-                ids=ids[start:end],
-                documents=[c.text for c in chunks[start:end]],
-                embeddings=list(embeddings[start:end]),
-                metadatas=[dict(c.metadata) for c in chunks[start:end]],
-            )
-        existing = self._collection.get(where={"document_id": document_id}, include=[])["ids"]
-        stale = sorted(set(existing) - set(ids))
-        if stale:
-            self._collection.delete(ids=stale)
+        with self._chroma_errors():
+            for start in range(0, len(ids), _WRITE_BATCH):
+                end = start + _WRITE_BATCH
+                self._collection.upsert(
+                    ids=ids[start:end],
+                    documents=[c.text for c in chunks[start:end]],
+                    embeddings=list(embeddings[start:end]),
+                    metadatas=[dict(c.metadata) for c in chunks[start:end]],
+                )
+            existing = self._collection.get(where={"document_id": document_id}, include=[])["ids"]
+            stale = sorted(set(existing) - set(ids))
+            if stale:
+                self._collection.delete(ids=stale)
         self._keywords.replace(
             [*ids, *stale],
             (_keyword_row(cid, c.text, c.metadata) for cid, c in zip(ids, chunks, strict=True)),
@@ -220,7 +245,8 @@ class VectorStore:
         self, text: str, top_k: int, where: dict[str, Any] | None = None
     ) -> list[RetrievedChunk]:
         """BM25 matches (no distance). Only `source` / `document_id` equality filters work."""
-        self._refresh_if_changed()
+        with self._chroma_errors():
+            self._refresh_if_changed()
         filters = {k: v for k, v in (where or {}).items() if isinstance(v, str)}
         if len(filters) != len(where or {}):
             raise VectorStoreError("keyword search only supports string equality filters")
@@ -231,7 +257,8 @@ class VectorStore:
             raise VectorStoreError(str(exc)) from exc
         if not ids:
             return []
-        stored = self._collection.get(ids=ids, include=["documents", "metadatas"])
+        with self._chroma_errors():
+            stored = self._collection.get(ids=ids, include=["documents", "metadatas"])
         by_id = {
             cid: Chunk(doc, {k: v for k, v in meta.items() if isinstance(v, str | int)})
             for cid, doc, meta in zip(
@@ -252,12 +279,13 @@ class VectorStore:
         for attempt in range(_READ_ATTEMPTS):
             if attempt:
                 time.sleep(_RETRY_DELAY * attempt)
-            self._refresh_if_changed(force=attempt > 0)
-            try:
-                found = self._dense_search(embedding, top_k, where)
-            except (InternalError, NotFoundError) as exc:
-                failure = exc
-                continue
+            with self._chroma_errors():  # anything not retried below
+                try:
+                    self._refresh_if_changed(force=attempt > 0)
+                    found = self._dense_search(embedding, top_k, where)
+                except (InternalError, NotFoundError) as exc:
+                    failure = exc
+                    continue
             complete = [r for r in found if r is not None]
             if len(complete) == len(found) or attempt == _READ_ATTEMPTS - 1:
                 return complete

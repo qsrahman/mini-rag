@@ -31,6 +31,23 @@ class IndexSummary:
     chunks_created: int = 0
     pruned: int = 0  # documents removed because their file no longer exists
     failed: list[tuple[Path, str]] = field(default_factory=list)
+    unreadable: list[tuple[Path, str]] = field(default_factory=list)  # folders not listed
+
+
+@dataclass(frozen=True)
+class Scan:
+    files: list[Path]
+    unreadable: list[tuple[Path, str]]
+
+
+def scan(directory: Path, root: Path, ignore: Sequence[str] = ()) -> Scan:
+    """Find the files to index, noting subfolders that cannot be read."""
+    unreadable: list[tuple[Path, str]] = []
+
+    def note(folder: Path, error: OSError) -> None:
+        unreadable.append((folder, str(error)))
+
+    return Scan(discover_files(directory, root, ignore, note), unreadable)
 
 
 class Indexer:
@@ -57,8 +74,11 @@ class Indexer:
         root = (self._root or directory).resolve()
         if not directory.is_relative_to(root):
             raise MiniRagError(f"{directory} is outside the project {root}")
-        files = discover_files(directory, root, self._ignore)
-        summary = IndexSummary(discovered=len(files))
+        found = scan(directory, root, self._ignore)
+        files = found.files
+        summary = IndexSummary(discovered=len(files), unreadable=found.unreadable)
+        for folder, reason in found.unreadable:
+            logger.warning("Could not read folder %s: %s", folder, reason)
         for path in files:
             try:
                 created = self._index_file(path, root)
@@ -84,18 +104,26 @@ class Indexer:
                 summary.chunks_created += created
         if prune:
             present = {self._document_id(f, root) for f in files}
-            summary.pruned = self._prune(PurePosixPath(directory.relative_to(root)), present)
+            unseen = [PurePosixPath(folder.relative_to(root)) for folder, _ in found.unreadable]
+            summary.pruned = self._prune(
+                PurePosixPath(directory.relative_to(root)), present, unseen
+            )
         return summary
 
-    def _prune(self, directory: PurePosixPath, present: set[str]) -> int:
+    def _prune(
+        self, directory: PurePosixPath, present: set[str], unseen: list[PurePosixPath]
+    ) -> int:
         """Remove indexed documents under `directory` whose files are gone or now ignored.
 
         Files that exist are in `present`, so ones that failed to parse keep their old content.
+        Nothing is removed under `unseen` folders: we could not tell what is still there.
         """
         gone = [
             document_id
             for document_id, source in self._store.indexed_documents().items()
-            if document_id not in present and PurePosixPath(source).is_relative_to(directory)
+            if document_id not in present
+            and PurePosixPath(source).is_relative_to(directory)
+            and not any(PurePosixPath(source).is_relative_to(folder) for folder in unseen)
         ]
         if gone and not present:
             # An empty or unmounted directory must not wipe the index.

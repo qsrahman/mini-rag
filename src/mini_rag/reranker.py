@@ -13,7 +13,7 @@ import math
 import ollama
 
 from mini_rag.models import RetrievedChunk
-from mini_rag.ollama_utils import OllamaError, ollama_errors
+from mini_rag.ollama_utils import OllamaError, make_client, ollama_errors
 
 _SYSTEM = (
     "Judge whether the Document is relevant to and answers the Query. "
@@ -32,7 +32,7 @@ class LlmReranker:
         self.model = model
         self._host = host
         self._num_ctx = num_ctx
-        self._client = client or ollama.Client(host=host)
+        self._client = client or make_client(host)
 
     def rerank(self, query: str, candidates: list[RetrievedChunk]) -> list[RetrievedChunk]:
         scores = [self._score(query, c.chunk.text) for c in candidates]

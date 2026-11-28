@@ -15,10 +15,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import ollama
-
 from mini_rag.models import Chunk, MiniRagError, RetrievedChunk
-from mini_rag.ollama_utils import ollama_errors
+from mini_rag.ollama_utils import make_client, ollama_errors
 from mini_rag.vector_store import chunk_id
 
 logger = logging.getLogger(__name__)
@@ -76,7 +74,7 @@ def _clean_question(raw: str) -> str:
 
 
 def ollama_question_writer(model: str, host: str, num_ctx: int) -> Callable[[str], str]:
-    client = ollama.Client(host=host)
+    client = make_client(host)
 
     def write(passage: str) -> str:
         with ollama_errors(model, host):

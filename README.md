@@ -239,7 +239,12 @@ mini-rag status                # project, models and number of indexed chunks
 ```
 
 `--rebuild` drops the project's whole collection before indexing, so it is refused together with a
-folder inside the project.
+folder inside the project. It is also refused, leaving the index unchanged, if any folder cannot be
+read or no supported files are found. Individual files that cannot be read or parsed during a rebuild
+are absent from the new index.
+
+A subfolder that cannot be read is reported under `Folders unreadable` and the rest is indexed;
+`--prune` keeps what was previously indexed under it.
 
 Discovers `.pdf`, `.docx`, `.txt`, `.md`/`.markdown` files recursively (hidden files and Word lock
 files are skipped), then prints a summary. Corrupted or empty files, and PDFs with no text layer
@@ -355,6 +360,10 @@ uv sync                   # install from uv.lock
 | Slow first answer | The model is loading into memory |
 | Every answer is slow | Check `status`: with thinking on, answers take much longer |
 | `does not support thinking` | Drop `--think` / `RAG_THINK` for this model |
+| `Invalid Ollama host` | Use a URL such as `http://localhost:11434` |
+| `Keyword index error ...` | If damaged, delete `.mini-rag/chroma/keywords.sqlite3`; it is rebuilt automatically |
+| `Vector database error ...` | If damaged, delete `.mini-rag/chroma` and run `mini-rag index` |
+| `Not rebuilding, the index is unchanged` | Fix the named folder's permissions, add it to `.mini-rag/ignore`, or check the files are there |
 
 ## Known limitations
 

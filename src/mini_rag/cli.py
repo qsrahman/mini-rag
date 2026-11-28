@@ -20,7 +20,7 @@ from mini_rag.evaluation import (
     write_questions,
 )
 from mini_rag.generator import Generator
-from mini_rag.indexer import Indexer
+from mini_rag.indexer import Indexer, scan
 from mini_rag.interactive import ChatShell, format_answer, format_status, working
 from mini_rag.models import MiniRagError
 from mini_rag.project import Project, init_project, open_project
@@ -168,6 +168,21 @@ def run_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_rebuildable(root: Path, ignore: Sequence[str]) -> None:
+    found = scan(root, root, ignore)
+    if found.unreadable:
+        folders = ", ".join(str(folder) for folder, _ in found.unreadable)
+        raise MiniRagError(
+            f"Not rebuilding, the index is unchanged: cannot read {folders}. Fix the "
+            "permissions or list the folder in .mini-rag/ignore."
+        )
+    if not found.files:
+        raise MiniRagError(
+            f"Not rebuilding, the index is unchanged: no supported files found under {root}. "
+            "To empty the index, delete .mini-rag/chroma."
+        )
+
+
 def run_index(args: argparse.Namespace, settings: Settings) -> int:
     root = settings.project_root
     directory = root if args.directory is None else args.directory.resolve()
@@ -181,6 +196,10 @@ def run_index(args: argparse.Namespace, settings: Settings) -> int:
             "--rebuild drops the whole project index, so it cannot be limited to a folder. "
             "Run `mini-rag index --rebuild`, or leave out --rebuild to re-index just that folder."
         )
+    # Read everything that can fail before --rebuild drops the existing index.
+    ignore = Project(root).ignore_patterns()
+    if args.rebuild:
+        _check_rebuildable(root, ignore)
     services = build_services(settings, rebuild=args.rebuild)
     indexer = Indexer(
         services.embedder,
@@ -188,7 +207,7 @@ def run_index(args: argparse.Namespace, settings: Settings) -> int:
         settings.chunk_size,
         settings.chunk_overlap,
         root,
-        Project(root).ignore_patterns(),
+        ignore,
     )
     with working("Indexing documents..."):
         summary = indexer.index_directory(directory, prune=args.prune)
@@ -200,9 +219,11 @@ def run_index(args: argparse.Namespace, settings: Settings) -> int:
     print(f"Chunks created: {summary.chunks_created}")
     if args.prune:
         print(f"Documents pruned: {summary.pruned}")
-    for path, reason in summary.failed:
+    if summary.unreadable:
+        print(f"Folders unreadable: {len(summary.unreadable)}")
+    for path, reason in [*summary.unreadable, *summary.failed]:
         print(f"  FAILED {path}: {reason}", file=sys.stderr)
-    return 1 if summary.failed else 0
+    return 1 if summary.failed or summary.unreadable else 0
 
 
 def run_ask(args: argparse.Namespace, settings: Settings) -> int:
@@ -228,6 +249,8 @@ def run_status(args: argparse.Namespace, settings: Settings) -> int:
 def run_eval(args: argparse.Namespace, settings: Settings) -> int:
     if args.k <= 0:
         raise MiniRagError(f"--k must be positive, got {args.k}")
+    if args.generate is not None and args.generate <= 0:
+        raise MiniRagError(f"--generate must be positive, got {args.generate}")
     services = build_services(settings)
     if args.generate is None:
         questions = load_questions(args.questions)
@@ -272,7 +295,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "init":
             return run_init(args)
         return handlers[args.command](args, _settings_from_args(args))
-    except MiniRagError as exc:
+    except (MiniRagError, OSError) as exc:  # OSError: unwritable folder, full disk, ...
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

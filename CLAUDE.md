@@ -33,7 +33,9 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
   `interactive.py` is presentation only and calls `RagService`, the same as `ask`.
 - `embeddings.py` is independent of the vector store. A new embedder only has to satisfy the
   `Embedder` protocol (`model` attribute plus `embed(texts)`).
-- Expected failures subclass `MiniRagError` and are caught only in `cli.main` and the chat loop.
+- Expected failures subclass `MiniRagError` and are caught only in `cli.main` and the chat loop
+  (`cli.main` also reports `OSError`). Translate third-party errors where they arise: Ollama via
+  `ollama_utils`, SQLite in `KeywordIndex`, ChromaDB in `VectorStore`.
   Per-file `LoaderError`s are caught in `Indexer`; Ollama errors deliberately abort the run.
 - No LangChain/LlamaIndex/Haystack. No external AI APIs. No `input()` for interaction.
 - Retrieval changes should be justified with `mini-rag eval` on a frozen question set, not by intuition.
@@ -62,6 +64,8 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
   it changes; every Chroma write path must therefore end with a keyword-index commit. Refreshing
   must not write. Dense reads retry while a writer is mid-change. Test this with a real second
   process (`tests/integration/test_other_process.py`).
+- **Check before destroying:** anything that can fail cheaply (ignore file, folder scan, Ollama
+  probe) runs before `--rebuild` drops the collection. Never prune under a folder we could not list.
 - **Parse failure and emptiness differ:** `LoaderError` keeps a document's old chunks,
   `EmptyDocumentError` removes them. `--rebuild` is only allowed for the whole project.
 - **Everything is per project** (`.mini-rag/`). `source` and `document_id` come from the path

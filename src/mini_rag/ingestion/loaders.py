@@ -79,15 +79,25 @@ def _is_ignored(relative: PurePosixPath, patterns: Sequence[str]) -> bool:
 
 
 def discover_files(
-    directory: Path, root: Path | None = None, ignore: Sequence[str] = ()
+    directory: Path,
+    root: Path | None = None,
+    ignore: Sequence[str] = (),
+    on_unreadable: Callable[[Path, OSError], None] | None = None,
 ) -> list[Path]:
     """Recursively find supported files, skipping hidden entries, Word lock files and anything
-    matching an `ignore` pattern (paths in patterns are relative to `root`)."""
+    matching an `ignore` pattern (paths in patterns are relative to `root`).
+
+    A subfolder that cannot be listed is passed to `on_unreadable`; without that callback, or
+    when `directory` itself cannot be listed, LoaderError is raised.
+    """
     root = root or directory
     found: list[Path] = []
 
     def onerror(error: OSError) -> None:
         location = error.filename or str(directory)
+        if on_unreadable and Path(location) != directory:
+            on_unreadable(Path(location), error)
+            return
         raise LoaderError(f"Could not scan directory {location}: {error}") from error
 
     def wanted(parent: str, name: str) -> bool:

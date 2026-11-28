@@ -5,7 +5,7 @@ from __future__ import annotations
 import ollama
 
 from mini_rag.config import DEFAULT_SYSTEM_PROMPT
-from mini_rag.ollama_utils import OllamaError, ollama_errors
+from mini_rag.ollama_utils import OllamaError, make_client, ollama_errors
 
 
 class Generator:
@@ -23,7 +23,7 @@ class Generator:
         self._system_prompt = system_prompt
         self._num_ctx = num_ctx
         self._think = think
-        self._client = client or ollama.Client(host=host)
+        self._client = client or make_client(host)
 
     def generate(self, question: str, context: str) -> str:
         # Documents first, question last (Anthropic: query at the end improves quality).

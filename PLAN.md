@@ -7,7 +7,7 @@ Not a framework. All processing, embedding and inference stay on the machine.
 
 ## Status
 
-The foundation described below is implemented and verified: 226 unit/integration tests pass, ruff
+The foundation described below is implemented and verified: 247 unit/integration tests pass, ruff
 and `mypy --strict` are clean.
 
 `uv run pytest -m live` (9 tests, about 30 s) passed against local Ollama (`qwen3.5:9b-mlx`,
@@ -35,6 +35,9 @@ exits 130.
 | Reader reopens ChromaDB when `keywords.sqlite3` `data_version` changes | `chat` otherwise missed new chunks in vector search and failed after a rebuild; a new client without `close()` reuses the cached index |
 | Dense reads retry, then drop vanished matches or report "being updated" | Reading mid-write raised errors or returned deleted chunks (this happened before the refresh too) |
 | Model thinking off by default (`RAG_THINK`, `--think`) | About 19x faster on the default model with no clear accuracy difference; see findings below |
+| Unreadable subfolders are skipped and reported; `--prune` leaves their documents | One folder must not stop a run, and "could not list" is not "deleted" |
+| `--rebuild` scans first and refuses on unreadable folders or no files | A broken ignore file, an unreadable folder or an empty directory each wiped the index |
+| Third-party errors become `MiniRagError`s at the module that calls them | Users get a message and a remedy instead of a traceback |
 | Chunk ID embeds content hash | New chunks never overwrite old ones, so replacement is add-then-delete and failure-safe |
 | Fingerprint includes chunk size/overlap | Changing chunking re-indexes without `--rebuild` |
 | Embedding model name stored on the collection | Prevents silently mixing incompatible vectors |

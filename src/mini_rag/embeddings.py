@@ -8,7 +8,7 @@ from typing import Protocol
 
 import ollama
 
-from mini_rag.ollama_utils import OllamaError, ollama_errors
+from mini_rag.ollama_utils import OllamaError, make_client, ollama_errors
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class OllamaEmbedder:
         self.model = model
         self._host = host
         self._batch_size = batch_size
-        self._client = client or ollama.Client(host=host)
+        self._client = client or make_client(host)
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         vectors: list[list[float]] = []

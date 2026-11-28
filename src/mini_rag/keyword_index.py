@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
+
+from mini_rag.models import MiniRagError
 
 _FILTER_COLUMNS = frozenset({"source", "document_id"})
 _WORD = re.compile(r"\w+")
@@ -22,30 +25,54 @@ _STOPWORDS = frozenset(
 )
 
 
+class KeywordIndexError(MiniRagError):
+    pass
+
+
 class KeywordIndex:
     def __init__(self, db_path: Path, table: str) -> None:
         # `table` is derived from a hash, never from user input, so it is safe to interpolate.
         self._table = table
+        self._path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(db_path)
-        # Porter stemming: "indexing", "indexed" and "index" match each other.
-        self._db.execute(
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING fts5("
-            "text, chunk_id UNINDEXED, source UNINDEXED, document_id UNINDEXED, "
-            "tokenize='porter unicode61')"
-        )
-        self._db.commit()
+        with self._errors():
+            self._db = sqlite3.connect(db_path)
+            # Porter stemming: "indexing", "indexed" and "index" match each other.
+            self._db.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING fts5("
+                "text, chunk_id UNINDEXED, source UNINDEXED, document_id UNINDEXED, "
+                "tokenize='porter unicode61')"
+            )
+            self._db.commit()
+
+    @contextmanager
+    def _errors(self) -> Iterator[None]:
+        try:
+            yield
+        except sqlite3.Error as exc:
+            if "locked" in str(exc) or "busy" in str(exc):
+                raise KeywordIndexError(
+                    "The keyword index is busy (is another `mini-rag index` running?). "
+                    "Try again in a moment."
+                ) from exc
+            raise KeywordIndexError(
+                f"Keyword index error in {self._path}: {exc}. If it is damaged, delete that "
+                "file and run the command again; it is rebuilt automatically."
+            ) from exc
 
     def ids(self) -> set[str]:
-        return {row[0] for row in self._db.execute(f"SELECT chunk_id FROM {self._table}")}
+        with self._errors():
+            return {row[0] for row in self._db.execute(f"SELECT chunk_id FROM {self._table}")}
 
     def data_version(self) -> int:
         """Changes whenever another connection (i.e. another process) commits to the database."""
-        version: int = self._db.execute("PRAGMA data_version").fetchone()[0]
+        with self._errors():
+            version: int = self._db.execute("PRAGMA data_version").fetchone()[0]
         return version
 
     def row_count(self) -> int:
-        count: int = self._db.execute(f"SELECT count(*) FROM {self._table}").fetchone()[0]
+        with self._errors():
+            count: int = self._db.execute(f"SELECT count(*) FROM {self._table}").fetchone()[0]
         return count
 
     # Each write is one transaction: another process must never see, or add to, a half-done
@@ -53,23 +80,23 @@ class KeywordIndex:
 
     def add(self, rows: Iterable[tuple[str, str, str, str]]) -> None:
         """Insert (chunk_id, source, document_id, text) rows."""
-        with self._db:
+        with self._errors(), self._db:
             self._insert(rows)
 
     def replace(self, old_ids: Iterable[str], rows: Iterable[tuple[str, str, str, str]]) -> None:
         """Delete `old_ids` and insert `rows` atomically."""
-        with self._db:
+        with self._errors(), self._db:
             self._delete(old_ids)
             self._insert(rows)
 
     def rebuild(self, rows: Iterable[tuple[str, str, str, str]]) -> None:
         """Replace the whole index atomically."""
-        with self._db:
+        with self._errors(), self._db:
             self._db.execute(f"DELETE FROM {self._table}")
             self._insert(rows)
 
     def delete(self, chunk_ids: Iterable[str]) -> None:
-        with self._db:
+        with self._errors(), self._db:
             self._delete(chunk_ids)
 
     def clear(self) -> None:
@@ -107,4 +134,5 @@ class KeywordIndex:
             f"SELECT chunk_id FROM {self._table} WHERE {' AND '.join(conditions)} "
             f"ORDER BY bm25({self._table}) LIMIT ?"
         )
-        return [row[0] for row in self._db.execute(sql, params)]
+        with self._errors():
+            return [row[0] for row in self._db.execute(sql, params)]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+import httpx
 import ollama
 
 from mini_rag.models import MiniRagError
@@ -12,6 +13,13 @@ from mini_rag.models import MiniRagError
 
 class OllamaError(MiniRagError):
     pass
+
+
+def make_client(host: str) -> ollama.Client:
+    try:
+        return ollama.Client(host=host)
+    except ValueError as exc:  # the SDK parses the URL eagerly
+        raise OllamaError(f"Invalid Ollama host {host!r}: {exc}") from exc
 
 
 @contextmanager
@@ -28,3 +36,5 @@ def ollama_errors(model: str, host: str) -> Iterator[None]:
         raise OllamaError(
             f"Cannot connect to Ollama at {host}. Is it running? (start it with: ollama serve)"
         ) from exc
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:  # timeouts, dropped or bad requests
+        raise OllamaError(f"Request to Ollama at {host} failed: {exc!r}") from exc

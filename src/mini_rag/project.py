@@ -6,6 +6,7 @@ trusted: only harmless settings are read from it, and symlinks inside it are ref
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 from collections.abc import Sequence
@@ -87,13 +88,22 @@ class Project:
     def history_path(self) -> Path:
         return self.data_dir / "chat_history"
 
+    def _read(self, name: str) -> str:
+        """Text of a project file, or "" if there is none."""
+        path = self.data_dir / name
+        if not path.is_file():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ProjectError(f"Cannot read {path}: {exc}") from exc
+
     def config(self) -> dict[str, str]:
         """Allowed settings from config.env; anything else is ignored with a warning."""
         path = self.data_dir / "config.env"
-        if not path.is_file():
-            return {}
+        text = io.StringIO(self._read(path.name))
         settings = {}
-        for key, value in dotenv_values(path, interpolate=False).items():
+        for key, value in dotenv_values(stream=text, interpolate=False).items():
             if value is None:
                 continue
             if key not in PROJECT_CONFIG_KEYS:
@@ -105,10 +115,7 @@ class Project:
         return settings
 
     def ignore_patterns(self) -> Sequence[str]:
-        path = self.data_dir / "ignore"
-        if not path.is_file():
-            return []
-        lines = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
+        lines = (line.strip() for line in self._read("ignore").splitlines())
         return [line.rstrip("/") for line in lines if line and not line.startswith("#")]
 
 
