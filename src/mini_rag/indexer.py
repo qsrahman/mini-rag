@@ -22,6 +22,10 @@ from mini_rag.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
+# Increase whenever loading or chunking changes the text or metadata stored for a file, so that
+# `index` re-processes files it has already seen. A test pins the current output to this number.
+INDEX_VERSION = 1
+
 
 @dataclass
 class IndexSummary:
@@ -139,9 +143,13 @@ class Indexer:
         return document_id_for(path.relative_to(root).as_posix())
 
     def _fingerprint(self, data: bytes) -> str:
-        # Chunking parameters are part of the fingerprint so changing them re-indexes.
+        # Chunking parameters and the index version are part of the fingerprint, so changing
+        # either re-indexes. Version 1 adds nothing: indexes built before versions stay current.
+        settings = f"|{self._chunk_size}|{self._chunk_overlap}"
+        if INDEX_VERSION > 1:
+            settings += f"|v{INDEX_VERSION}"
         digest = hashlib.sha256(data)
-        digest.update(f"|{self._chunk_size}|{self._chunk_overlap}".encode())
+        digest.update(settings.encode())
         return digest.hexdigest()
 
     def _index_file(self, path: Path, root: Path) -> int | None:

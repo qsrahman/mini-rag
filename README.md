@@ -46,7 +46,8 @@ flowchart LR
 Key behaviours:
 
 - **Incremental indexing.** Each file gets a fingerprint (SHA-256 of its bytes plus the chunk
-  size/overlap). Unchanged files are skipped; changed files are re-embedded and replaced. Chunk IDs
+  size/overlap and an index version, which is raised when a new mini-rag release extracts or chunks
+  text differently, so the next `index` re-processes your files). Unchanged files are skipped; changed files are re-embedded and replaced. Chunk IDs
   contain the fingerprint, so replacement first *adds* the new chunks and only then deletes the
   old ones. If embedding fails, the previous version stays intact.
 - **Embedding-model safety.** The embedding model name is stored on the collection. Using a

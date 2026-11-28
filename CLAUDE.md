@@ -49,8 +49,10 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
 
 - **Safe replacement:** `VectorStore.replace_document` upserts new chunks, then deletes stale ones.
   Chunk IDs are `{document_id}-{content_hash[:12]}-{chunk_index}`; embed before touching the store.
-- **Fingerprint** = SHA-256 of file bytes + chunk size + overlap. Anything that changes chunk
-  output must be part of it, or unchanged-file skipping will serve stale chunks.
+- **Fingerprint** = SHA-256 of file bytes + chunk size + overlap + `INDEX_VERSION`. Anything
+  that changes chunk output must be part of it, or unchanged-file skipping will serve stale chunks.
+  When loader or chunker output changes, increase `INDEX_VERSION` in `indexer.py` and update the
+  pinned digest in `tests/integration/test_index_version.py` (the test fails until you do).
 - **Embedding-model identity** is stored in collection metadata and checked on open; mismatch
   raises with a `--rebuild` instruction. Never hardcode embedding dimensions.
 - **Sources come from retrieval, not the LLM.** `[S1]`... are assigned in `rag.build_sources`;

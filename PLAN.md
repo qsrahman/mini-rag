@@ -7,7 +7,7 @@ Not a framework. All processing, embedding and inference stay on the machine.
 
 ## Status
 
-The foundation described below is implemented and verified: 247 unit/integration tests pass, ruff
+The foundation described below is implemented and verified: 250 unit/integration tests pass, ruff
 and `mypy --strict` are clean.
 
 `uv run pytest -m live` (9 tests, about 30 s) passed against local Ollama (`qwen3.5:9b-mlx`,
@@ -41,6 +41,8 @@ exits 130.
 | CI on Linux and macOS with a locked sync; actions pinned to commits | Catches breakage on push without needing Ollama |
 | Chunk ID embeds content hash | New chunks never overwrite old ones, so replacement is add-then-delete and failure-safe |
 | Fingerprint includes chunk size/overlap | Changing chunking re-indexes without `--rebuild` |
+| `INDEX_VERSION` in the fingerprint, pinned to a digest of loader and chunker output by a test | Code changes reach already indexed files; version 1 leaves existing fingerprints unchanged |
+| `chromadb` capped below version 2 | `uv tool install` ignores the lockfile, and the app relies on Chroma internals (backend path, process cache) |
 | Embedding model name stored on the collection | Prevents silently mixing incompatible vectors |
 | Hybrid retrieval (dense + BM25, RRF k=60) is the default; `dense` stays available | Measured gain on the eval; exact identifiers are common in documents |
 | BM25 via SQLite FTS5 in a derived `keywords.sqlite3`, repaired from ChromaDB on open | Stdlib, no new dependency, persistent; avoids a second source of truth |
