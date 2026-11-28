@@ -37,13 +37,6 @@ def test_new_index_version_reindexes_unchanged_files_once(indexed, monkeypatch):
     assert indexer.index_directory(root).unchanged == 2
 
 
-@pytest.mark.skipif(indexer_module.INDEX_VERSION != 1, reason="only version 1 is unmarked")
-def test_version_one_fingerprint_matches_indexes_built_before_versions_existed(tmp_path):
-    # Introducing the version must not by itself force everyone to re-embed.
-    indexer = Indexer(None, None, 400, 60)  # type: ignore[arg-type]
-    assert indexer._fingerprint(b"content") == hashlib.sha256(b"content|400|60").hexdigest()
-
-
 def sample_output(tmp_path) -> str:
     """Digest of everything loading and chunking produce for a fixed set of documents."""
     prose = "\n\n".join(f"Paragraph {i}. " + "It has a sentence. " * 8 for i in range(6))
@@ -66,7 +59,7 @@ def sample_output(tmp_path) -> str:
 
 
 def test_loader_and_chunker_output_is_pinned_to_the_index_version(tmp_path):
-    expected = (1, "3fbf1c8ebfc969bd")
+    expected = (2, "68b990edf997cc48")
     assert (indexer_module.INDEX_VERSION, sample_output(tmp_path)) == expected, (
         "Loading or chunking output changed. Files already indexed will keep the old output "
         "unless INDEX_VERSION in indexer.py is increased; then update `expected` here."

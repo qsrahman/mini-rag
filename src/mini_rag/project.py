@@ -46,6 +46,7 @@ _CONFIG_TEMPLATE = """\
 # RAG_LLM_MODEL=qwen3.5:9b-mlx
 # RAG_EMBEDDING_MODEL=nomic-embed-text-v2-moe
 # RAG_CHUNK_SIZE=400
+# Overlap defaults to 15% of the chunk size:
 # RAG_CHUNK_OVERLAP=60
 # RAG_TOP_K=5
 # RAG_RETRIEVAL=hybrid

@@ -6,7 +6,7 @@ from mini_rag.config import ConfigError, Settings
 def test_defaults():
     s = Settings.from_env({})
     assert (s.llm_model, s.embedding_model) == ("qwen3.5:9b-mlx", "nomic-embed-text-v2-moe")
-    assert (s.chunk_size, s.chunk_overlap, s.top_k) == (400, 60, 5)
+    assert (s.chunk_size, s.effective_chunk_overlap, s.top_k) == (400, 60, 5)
     assert "document question-answering assistant" in s.system_prompt
 
 
@@ -51,3 +51,18 @@ def test_retrieval_and_rerank_settings():
 def test_thinking_setting(raw, expected):
     assert Settings.from_env({}).think is False
     assert Settings.from_env({"RAG_THINK": raw}).think is expected
+
+
+@pytest.mark.parametrize("size,overlap", [(400, 60), (50, 7), (1000, 150), (1, 0)])
+def test_default_overlap_follows_the_chunk_size(size, overlap):
+    assert Settings.from_env({"RAG_CHUNK_SIZE": str(size)}).effective_chunk_overlap == overlap
+    assert Settings().with_overrides(chunk_size=size).effective_chunk_overlap == overlap
+
+
+def test_explicit_overlap_is_kept_and_validated():
+    s = Settings.from_env({"RAG_CHUNK_SIZE": "200", "RAG_CHUNK_OVERLAP": "0"})
+    assert s.effective_chunk_overlap == 0
+    with pytest.raises(ConfigError, match="smaller than"):
+        Settings.from_env({"RAG_CHUNK_SIZE": "50", "RAG_CHUNK_OVERLAP": "60"})
+    with pytest.raises(ConfigError, match="smaller than"):
+        Settings.from_env({"RAG_CHUNK_OVERLAP": "60"}).with_overrides(chunk_size=50)

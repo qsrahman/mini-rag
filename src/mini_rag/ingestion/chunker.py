@@ -7,8 +7,8 @@ trade-off is that chunk sizes in real tokens vary with the language and content.
 
 from __future__ import annotations
 
-import itertools
 import re
+import textwrap
 from collections.abc import Iterable
 
 from mini_rag.models import Chunk, Document
@@ -16,34 +16,55 @@ from mini_rag.models import Chunk, Document
 CHARS_PER_TOKEN = 4
 
 _PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+# Capturing, so the whitespace between sentences is kept and line breaks survive.
+_SENTENCE_SPLIT = re.compile(r"((?<=[.!?])\s+)")
 
-# (text, index of the paragraph it came from)
-_Unit = tuple[str, int]
+# (text, what separates it from the unit before: blank line, line break or space)
+_Unit = tuple[str, str]
 
 
 def _join(units: list[_Unit]) -> str:
-    out = units[0][0]
-    for prev, cur in itertools.pairwise(units):
-        out += ("\n\n" if cur[1] != prev[1] else " ") + cur[0]
-    return out
+    return units[0][0] + "".join(separator + text for text, separator in units[1:])
+
+
+def _split_long(text: str, separator: str, max_chars: int) -> list[_Unit]:
+    """Cut an oversized sentence at line breaks, then between words; only a single word longer
+    than a chunk is ever cut."""
+    units: list[_Unit] = []
+    for line in text.split("\n"):
+        pieces = textwrap.wrap(
+            line.strip(),
+            max_chars,
+            expand_tabs=False,
+            replace_whitespace=False,
+            break_on_hyphens=False,
+        )
+        for number, piece in enumerate(pieces):
+            units.append((piece, " " if number else separator))
+        if pieces:
+            separator = "\n"
+    return units
 
 
 def _split_units(text: str, max_chars: int) -> list[_Unit]:
-    """Paragraphs; oversized ones become sentences; oversized sentences are hard-wrapped."""
+    """Paragraphs; oversized ones become sentences; oversized sentences become lines or words."""
     units: list[_Unit] = []
-    for index, paragraph in enumerate(_PARAGRAPH_SPLIT.split(text)):
+    for paragraph in _PARAGRAPH_SPLIT.split(text):
         paragraph = paragraph.strip()
         if not paragraph:
             continue
         if len(paragraph) <= max_chars:
-            units.append((paragraph, index))
+            units.append((paragraph, "\n\n"))
             continue
-        for sentence in _SENTENCE_SPLIT.split(paragraph):
-            for start in range(0, len(sentence), max_chars):
-                piece = sentence[start : start + max_chars].strip()
-                if piece:
-                    units.append((piece, index))
+        separator = "\n\n"
+        # Alternates sentence, gap, sentence, ..., with a final empty gap added.
+        parts = [*_SENTENCE_SPLIT.split(paragraph), ""]
+        for sentence, gap in zip(parts[::2], parts[1::2], strict=True):
+            if len(sentence) <= max_chars:
+                units.append((sentence, separator))
+            else:
+                units.extend(_split_long(sentence, separator, max_chars))
+            separator = "\n" if "\n" in gap else " "
     return units
 
 

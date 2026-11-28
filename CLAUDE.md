@@ -84,7 +84,8 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
 - The generator always sends `think` (default `False`): reasoning models otherwise think by default
   and answers take tens of seconds. Live Ctrl+C tests pass `--think` so generation is slow enough.
 - Chroma metadata values are `str | int` only; omit `page` for non-PDF files rather than using None.
-- Chunk sizes are character-based (~4 chars/token), documented in `chunker.py`.
+- Chunk sizes are character-based (~4 chars/token), documented in `chunker.py`. Never cut inside a
+  word. `Settings.chunk_overlap` may be `None`; use `effective_chunk_overlap`.
 
 ## Testing conventions
 

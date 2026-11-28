@@ -7,7 +7,7 @@ Not a framework. All processing, embedding and inference stay on the machine.
 
 ## Status
 
-The foundation described below is implemented and verified: 250 unit/integration tests pass, ruff
+The foundation described below is implemented and verified: 264 unit/integration tests pass, ruff
 and `mypy --strict` are clean.
 
 `uv run pytest -m live` (9 tests, about 30 s) passed against local Ollama (`qwen3.5:9b-mlx`,
@@ -57,7 +57,9 @@ exits 130.
 | Sources tracked outside the LLM | Citations can't be fabricated into the source list; unknown IDs produce a warning |
 | Ollama errors abort indexing, loader errors don't | Ollama problems affect every file; a bad file affects only itself |
 | Character-based chunk sizing (~4 chars/token) | Avoids a tokenizer dependency |
-| Default chunk 400 / overlap 60 | Keeps chunks under the embedding model's 512-token input limit; overlap stays at 15% |
+| Default chunk 400 / overlap 15% (60) | Keeps chunks under the embedding model's 512-token input limit; an unset overlap follows the chunk size |
+| Oversized text splits at sentences, lines, then words (index version 2) | The old character cut split words and lines; see findings below |
+| One-off chunk flags print a note | They are not persisted; `config.env` is where lasting values belong |
 | Each file is read once; loaders parse bytes | The indexer hashes and parses the same bytes, so there is no double read and no hash/parse mismatch if the file changes mid-run |
 | `os.walk` with directory pruning for discovery | Hidden directories (`.git`, ...) are never descended into |
 | `index --rebuild` probes the embedder before dropping the collection | An unreachable Ollama can't wipe the existing index |
@@ -164,6 +166,23 @@ The weak case was date arithmetic ("90 days before 31 December"). With thinking 
 to calculate (2 of 2 runs). With it off, three reruns each gave a different wrong date; the first run
 passed the automatic check. So off fails confidently and on fails cautiously, at far higher cost. The
 automatic checks mis-scored two correct answers, corrected by hand. A small, single-model sample.
+
+## Chunking change (index version 2)
+
+Old versus new chunker, 400/60, hybrid retrieval:
+
+| Measure | Old | New |
+|---|---|---|
+| Words split, generated lists (2,640 lines) | 178 | 0 |
+| Words split, 74 package READMEs | 93 | 0 |
+| Lines intact in some chunk (lists) | 2524/2640 | 2640/2640 |
+| Complete requested line in top 5 (150 lookups) | 86 | 98 |
+| Same, top 1 | 55 | 62 |
+| READMEs, right document hit@5 (100 questions) | 96% | 94% |
+| READMEs, document MRR | 0.927 | 0.921 |
+
+A clear gain for lists; no measurable change on prose-heavy READMEs (the difference is two
+questions). A 200,000-line file with no sentence breaks takes about 0.8 s to chunk.
 
 ## Roadmap (not started; each is optional and out of scope for v1)
 

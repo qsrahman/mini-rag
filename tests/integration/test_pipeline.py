@@ -462,3 +462,23 @@ def test_thinking_reaches_the_generator(docs, project, monkeypatch, config, flag
     monkeypatch.setattr("mini_rag.cli.Generator", fake_generator)
     assert main(["status", *project, *flags]) == 0
     assert seen["think"] is expected
+
+
+def test_small_chunk_size_works_without_naming_an_overlap(docs, project, capsys):
+    main(["index", "--chunk-size", "50", *project])
+    assert "Files indexed: 4" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flag", [["--chunk-size", "50"], ["--chunk-overlap", "10"]])
+def test_one_off_chunk_flags_say_how_to_make_them_permanent(docs, project, capsys, flag):
+    main(["index", *flag, *project])
+    err = capsys.readouterr().err
+    assert "this run only" in err and "config.env" in err
+
+
+def test_chunk_settings_from_config_need_no_note(docs, project, capsys):
+    (docs / ".mini-rag" / "config.env").write_text("RAG_CHUNK_SIZE=50\n")
+    main(["index", *project])
+    assert "this run only" not in capsys.readouterr().err
+    main(["index", *project])
+    assert "Files unchanged: 4" in capsys.readouterr().out

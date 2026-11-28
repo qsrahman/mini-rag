@@ -114,7 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="also remove indexed documents whose files were deleted or are now ignored",
     )
     index.add_argument("--chunk-size", type=int, help="chunk size in (approximate) tokens")
-    index.add_argument("--chunk-overlap", type=int, help="chunk overlap in (approximate) tokens")
+    index.add_argument(
+        "--chunk-overlap", type=int, help="overlap in tokens (default: 15%% of the chunk size)"
+    )
 
     ask = commands.add_parser("ask", parents=[query], help="ask one question")
     ask.add_argument("question")
@@ -205,10 +207,17 @@ def run_index(args: argparse.Namespace, settings: Settings) -> int:
         services.embedder,
         services.store,
         settings.chunk_size,
-        settings.chunk_overlap,
+        settings.effective_chunk_overlap,
         root,
         ignore,
     )
+    if args.chunk_size is not None or args.chunk_overlap is not None:
+        print(
+            "note: chunk options apply to this run only; a later `index` without them re-chunks "
+            "your files. To keep them, set RAG_CHUNK_SIZE / RAG_CHUNK_OVERLAP in "
+            ".mini-rag/config.env.",
+            file=sys.stderr,
+        )
     with working("Indexing documents..."):
         summary = indexer.index_directory(directory, prune=args.prune)
     print("Document indexing completed.\n")

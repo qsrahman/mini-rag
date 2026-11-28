@@ -80,3 +80,44 @@ def test_metadata_is_preserved_and_chunk_index_spans_pages():
     [d2] = [c for c in chunks if c.metadata["document_id"] == "d2"]
     assert d2.metadata == {"source": "b.txt", "document_id": "d2", "chunk_index": 0}
     assert all(c.text.strip() for c in chunks)
+
+
+def words_of(chunks):
+    return [w for c in chunks for w in c.split()]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "\n".join(f"- configuration_option_{i} enables feature number {i}" for i in range(120)),
+        " ".join(f"identifier{i:05d}" for i in range(600)),
+        "A sentence. " + "\t".join(f"column{i:04d}" for i in range(300)) + " and no stop",
+    ],
+    ids=["list", "one-long-line", "tabs"],
+)
+def test_text_without_sentence_breaks_is_never_cut_inside_a_word(text):
+    chunks = split_text(text, chunk_size=100, chunk_overlap=0)
+    assert len(chunks) > 1
+    assert words_of(chunks) == text.split()
+    assert all(len(c) <= 100 * CHARS_PER_TOKEN for c in chunks)
+
+
+def test_long_lists_are_split_between_lines():
+    lines = [f"- configuration_option_{i} enables feature number {i}" for i in range(120)]
+    chunks = split_text("\n".join(lines), chunk_size=100, chunk_overlap=15)
+    for chunk in chunks:
+        assert set(chunk.split("\n")) <= set(lines)  # whole lines, newlines preserved
+    assert {line for c in chunks for line in c.split("\n")} == set(lines)
+
+
+def test_list_chunks_overlap_by_whole_lines():
+    lines = [f"item number {i} in the list" for i in range(60)]
+    chunks = split_text("\n".join(lines), chunk_size=50, chunk_overlap=15)
+    for previous, current in itertools.pairwise(chunks):
+        assert current.split("\n")[0] in previous.split("\n")
+
+
+def test_newlines_between_sentences_of_a_long_paragraph_are_kept():
+    text = "\n".join(f"Sentence number {i} ends here." for i in range(40))
+    chunks = split_text(text, chunk_size=50, chunk_overlap=0)
+    assert "\n".join(chunks) == text

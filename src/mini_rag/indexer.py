@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Increase whenever loading or chunking changes the text or metadata stored for a file, so that
 # `index` re-processes files it has already seen. A test pins the current output to this number.
-INDEX_VERSION = 1
+INDEX_VERSION = 2  # 2: long text is split between lines and words, never inside a word
 
 
 @dataclass
@@ -144,12 +144,9 @@ class Indexer:
 
     def _fingerprint(self, data: bytes) -> str:
         # Chunking parameters and the index version are part of the fingerprint, so changing
-        # either re-indexes. Version 1 adds nothing: indexes built before versions stay current.
-        settings = f"|{self._chunk_size}|{self._chunk_overlap}"
-        if INDEX_VERSION > 1:
-            settings += f"|v{INDEX_VERSION}"
+        # either re-indexes.
         digest = hashlib.sha256(data)
-        digest.update(settings.encode())
+        digest.update(f"|{self._chunk_size}|{self._chunk_overlap}|v{INDEX_VERSION}".encode())
         return digest.hexdigest()
 
     def _index_file(self, path: Path, root: Path) -> int | None:

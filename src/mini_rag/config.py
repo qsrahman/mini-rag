@@ -46,7 +46,7 @@ class Settings:
     embedding_model: str = "nomic-embed-text-v2-moe"
     ollama_host: str = "http://localhost:11434"
     chunk_size: int = 400  # approximate tokens, see ingestion/chunker.py
-    chunk_overlap: int = 60
+    chunk_overlap: int | None = None  # None: 15% of the chunk size (60 by default)
     top_k: int = 5
     # Let the chat model reason before answering. Far slower; off unless asked for.
     think: bool = False
@@ -66,12 +66,12 @@ class Settings:
     def __post_init__(self) -> None:
         if self.chunk_size <= 0:
             raise ConfigError(f"chunk size must be positive, got {self.chunk_size}")
-        if self.chunk_overlap < 0:
-            raise ConfigError(f"chunk overlap must not be negative, got {self.chunk_overlap}")
-        if self.chunk_overlap >= self.chunk_size:
+        overlap = self.effective_chunk_overlap
+        if overlap < 0:
+            raise ConfigError(f"chunk overlap must not be negative, got {overlap}")
+        if overlap >= self.chunk_size:
             raise ConfigError(
-                f"chunk overlap ({self.chunk_overlap}) must be smaller than "
-                f"chunk size ({self.chunk_size})"
+                f"chunk overlap ({overlap}) must be smaller than chunk size ({self.chunk_size})"
             )
         if self.top_k <= 0:
             raise ConfigError(f"top-k must be positive, got {self.top_k}")
@@ -82,6 +82,12 @@ class Settings:
         for name in ("llm_model", "embedding_model", "ollama_host", "collection_name"):
             if not getattr(self, name).strip():
                 raise ConfigError(f"{name} must not be empty")
+
+    @property
+    def effective_chunk_overlap(self) -> int:
+        if self.chunk_overlap is None:
+            return self.chunk_size * 15 // 100
+        return self.chunk_overlap
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -108,7 +114,7 @@ class Settings:
             embedding_model=text("RAG_EMBEDDING_MODEL", defaults.embedding_model),
             ollama_host=text("RAG_OLLAMA_HOST", defaults.ollama_host),
             chunk_size=integer("RAG_CHUNK_SIZE", defaults.chunk_size),
-            chunk_overlap=integer("RAG_CHUNK_OVERLAP", defaults.chunk_overlap),
+            chunk_overlap=(integer("RAG_CHUNK_OVERLAP", 0) if "RAG_CHUNK_OVERLAP" in env else None),
             top_k=integer("RAG_TOP_K", defaults.top_k),
             retrieval=text("RAG_RETRIEVAL", defaults.retrieval),
             rerank=flag("RAG_RERANK"),

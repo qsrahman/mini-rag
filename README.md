@@ -160,7 +160,7 @@ command-line options. [.env.example](.env.example) lists the variables.
 | `RAG_LLM_MODEL` | `qwen3.5:9b-mlx` | `--model` (ask, chat) | yes |
 | `RAG_EMBEDDING_MODEL` | `nomic-embed-text-v2-moe` | `--embedding-model` | yes |
 | `RAG_CHUNK_SIZE` | `400` | `--chunk-size` (index) | yes |
-| `RAG_CHUNK_OVERLAP` | `60` | `--chunk-overlap` (index) | yes |
+| `RAG_CHUNK_OVERLAP` | 15% of the chunk size (`60`) | `--chunk-overlap` (index) | yes |
 | `RAG_TOP_K` | `5` | `--top-k` (ask, chat) | yes |
 | `RAG_RETRIEVAL` | `hybrid` | `--retrieval dense\|hybrid` | yes |
 | `RAG_RERANK` | `false` | `--rerank` / `--no-rerank` | yes |
@@ -181,6 +181,11 @@ small enough that five 400-token chunks plus the question could be silently trun
 > 400 (approximate) tokens leaves headroom. Sizes are estimated at ~4 characters per token; for
 > non-English or code-heavy text the real token count can be higher, so lower `RAG_CHUNK_SIZE` if
 > you see weak retrieval. Changing chunk settings re-indexes files automatically.
+
+Set chunk settings in `.mini-rag/config.env` to keep them: `--chunk-size` and `--chunk-overlap`
+apply to one run, and the next `index` without them re-chunks with the configured values. Chunks
+break between paragraphs, then sentences, lines and words; only a word longer than a whole chunk is
+cut.
 
 ### System prompt
 

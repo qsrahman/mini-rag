@@ -53,7 +53,7 @@ def live(tmp_path_factory):
     _require_ollama(settings)
     services = build_services(settings)
     summary = Indexer(
-        services.embedder, services.store, settings.chunk_size, settings.chunk_overlap
+        services.embedder, services.store, settings.chunk_size, settings.effective_chunk_overlap
     ).index_directory(docs)
     assert summary.failed == []
     assert summary.indexed == 4
@@ -95,7 +95,7 @@ def test_unanswerable_question_is_declined(live):
 def test_second_index_run_is_a_no_op(live):
     settings, services, docs = live
     summary = Indexer(
-        services.embedder, services.store, settings.chunk_size, settings.chunk_overlap
+        services.embedder, services.store, settings.chunk_size, settings.effective_chunk_overlap
     ).index_directory(docs)
     assert (summary.indexed, summary.unchanged) == (0, 4)
 
