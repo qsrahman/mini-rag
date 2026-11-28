@@ -10,6 +10,7 @@ import os
 import pty
 import re
 import select
+import subprocess
 import sys
 import time
 
@@ -155,7 +156,8 @@ def _env() -> dict[str, str]:
 
 def test_ctrl_c_cancels_generation_in_chat_and_shell_survives(live):
     settings = live[0]
-    proc = PtyProcess(["chat", "--project", str(settings.project_root)], _env())
+    # --think keeps generation slow enough to be interrupted reliably.
+    proc = PtyProcess(["chat", "--think", "--project", str(settings.project_root)], _env())
     try:
         assert proc.wait_for("You >", 90), proc._text
         proc.send(b"Explain everything you know about Mount Zork in great detail.\r")
@@ -177,12 +179,57 @@ def test_ctrl_c_cancels_generation_in_chat_and_shell_survives(live):
 def test_ctrl_c_during_one_shot_ask_exits_130(live):
     settings = live[0]
     question = "Explain everything about Mount Zork in great detail."
-    proc = PtyProcess(["ask", question, "--project", str(settings.project_root)], _env())
+    proc = PtyProcess(["ask", question, "--think", "--project", str(settings.project_root)], _env())
     try:
         assert proc.wait_for("Searching documents", 60), proc._text
         time.sleep(1.5)
         proc.send(b"\x03")
         assert proc.wait_for("Interrupted.", 20), proc._text
         assert proc.exit_code(15) == 130
+    finally:
+        proc.kill()
+
+
+def test_open_chat_follows_indexing_done_elsewhere(tmp_path):
+    project, _ = init_project(tmp_path)
+    settings = Settings.for_project(project, {})
+    _require_ollama(settings)
+
+    def index(*extra: str) -> None:
+        subprocess.run(
+            [sys.executable, "-m", "mini_rag", "index", "--project", str(tmp_path), *extra],
+            check=True,
+            env=_env(),
+            capture_output=True,
+        )
+
+    (tmp_path / "geography.txt").write_text("The capital of Freedonia is Fredville.\n")
+    index()
+    proc = PtyProcess(["chat", "--project", str(tmp_path)], _env())
+
+    def ask(question: str, expected: str) -> None:
+        proc.send(question.encode() + b"\r")
+        assert proc.wait_for(expected, 150), proc._text
+        assert proc.wait_for("You >", 30), proc._text
+
+    try:
+        assert proc.wait_for("You >", 90), proc._text
+        ask("What is the capital of Freedonia?", "Fredville")
+
+        (tmp_path / "reactor.txt").write_text("The Quibble reactor runs on purple sunlight.\n")
+        index()
+        ask("What does the Quibble reactor run on?", "reactor.txt")
+
+        index("--rebuild")
+        (tmp_path / "food.txt").write_text("Glorp is the national dish of Sylvania.\n")
+        index()
+        ask("What is the national dish of Sylvania?", "food.txt")
+
+        proc.send(b"/status\r")
+        assert proc.wait_for("Indexed chunks: 3", 10), proc._text
+        assert "error" not in proc._text.lower(), proc._text
+        assert proc.wait_for("You >", 10), proc._text
+        proc.send(b"/exit\r")
+        assert proc.exit_code(15) == 0
     finally:
         proc.kill()

@@ -163,6 +163,7 @@ command-line options. [.env.example](.env.example) lists the variables.
 | `RAG_TOP_K` | `5` | `--top-k` (ask, chat) | yes |
 | `RAG_RETRIEVAL` | `hybrid` | `--retrieval dense\|hybrid` | yes |
 | `RAG_RERANK` | `false` | `--rerank` / `--no-rerank` | yes |
+| `RAG_THINK` | `false` | `--think` / `--no-think` (ask, chat) | yes |
 | `RAG_NUM_CTX` | `8192` | | yes |
 | `RAG_OLLAMA_HOST` | `http://localhost:11434` | `--ollama-host` | no |
 | `RAG_COLLECTION_NAME` | `documents` | `--collection` | no |
@@ -237,14 +238,25 @@ mini-rag index --prune         # also drop documents that were deleted or are no
 mini-rag status                # project, models and number of indexed chunks
 ```
 
-`--rebuild` drops the project's whole collection before indexing, so run it without a folder
-argument unless you want only that folder in the index.
+`--rebuild` drops the project's whole collection before indexing, so it is refused together with a
+folder inside the project.
 
 Discovers `.pdf`, `.docx`, `.txt`, `.md`/`.markdown` files recursively (hidden files and Word lock
 files are skipped), then prints a summary. Corrupted or empty files, and PDFs with no text layer
 (scanned; no OCR), are reported under `Files failed` without stopping the run; the exit code is 1 if
-any file failed. A problem with Ollama itself (not running, model missing) aborts the run with
+any file failed. A file that can no longer be parsed keeps its previously indexed content; one that
+now holds no text at all has that content removed. A problem with Ollama itself (not running, model missing) aborts the run with
 instructions.
+
+### Thinking
+
+Models that can "think" reason at length before answering. mini-rag turns this **off** by default:
+on `qwen3.5:9b-mlx`, 13 test questions took a median of 2 s without thinking and 38 s with it, with
+no clear difference in accuracy. Turn it on per question with `--think`. Neither mode was reliable
+at date arithmetic, so check calculated answers against the cited source. Without thinking the model
+tended to give a wrong date; with it, to say the date was not stated. Some models (for example
+`gpt-oss`) still reason a little when thinking is off; a model that cannot think returns an error if
+you pass `--think`.
 
 ### Ask one question
 
@@ -275,7 +287,9 @@ Recipe adapted from the [hybrid-retrieval cookbook](https://github.com/daveebbel
 mini-rag chat
 ```
 
-Each question is answered independently (there is no conversation memory).
+Each question is answered independently (there is no conversation memory). You can run
+`mini-rag index` in another terminal while a chat is open: the next question uses the updated index.
+During a `--rebuild`, questions search whatever has been re-indexed so far, or ask you to try again.
 
 | Command | Description |
 |---|---|
@@ -308,7 +322,7 @@ tests/
 
 ```bash
 uv run pytest                 # no Ollama required (live tests are deselected)
-uv run pytest -m live         # live end-to-end tests; needs Ollama + the default models (~2 min)
+uv run pytest -m live         # live end-to-end tests; needs Ollama + the default models (~30 s with the default model)
 uv run pytest --cov=mini_rag
 uv run ruff check .
 uv run ruff format .
@@ -338,7 +352,9 @@ uv sync                   # install from uv.lock
 | `no extractable text` for a PDF | It is likely scanned images; OCR is not supported |
 | `No mini-rag project here` | Run `mini-rag init` in your document folder, or pass `--project` |
 | Answers say nothing was found | Run `index` first, check `status` shows chunks, try a larger `--top-k` |
-| Slow first answer | The model is loading into memory; thinking models also reason before replying |
+| Slow first answer | The model is loading into memory |
+| Every answer is slow | Check `status`: with thinking on, answers take much longer |
+| `does not support thinking` | Drop `--think` / `RAG_THINK` for this model |
 
 ## Known limitations
 

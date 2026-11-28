@@ -10,7 +10,7 @@ Use `uv` only (no pip/Poetry/Conda). Python `>=3.14`.
 ```bash
 uv sync
 uv run pytest                  # no Ollama needed; `live` tests are deselected
-uv run pytest -m live          # real-Ollama end-to-end tests (~2 min)
+uv run pytest -m live          # real-Ollama end-to-end tests (~30 s with the default model)
 uv run ruff check . && uv run ruff format .
 uv run mypy src/               # strict
 uv run mini-rag --help
@@ -54,7 +54,16 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
   `<document id="S1">`, the system prompt tells the model to cite `[S1]`, and
   `find_unknown_citations` parses that style. Change them together.
 - **ChromaDB is the source of truth; the FTS5 keyword index is derived.** Every write path in
-  `VectorStore` (replace, delete) must update both; `_sync_keywords` repairs drift on open.
+  `VectorStore` (replace, delete) must update both; `_sync_keywords` repairs drift on open and
+  runs on every command, so it compares ids only. Each keyword write is a single transaction
+  (another process may open the index mid-write).
+- **Readers follow other processes.** ChromaDB caches its vector index per process, so
+  `VectorStore` watches the keyword database's `data_version` and closes and reopens the client when
+  it changes; every Chroma write path must therefore end with a keyword-index commit. Refreshing
+  must not write. Dense reads retry while a writer is mid-change. Test this with a real second
+  process (`tests/integration/test_other_process.py`).
+- **Parse failure and emptiness differ:** `LoaderError` keeps a document's old chunks,
+  `EmptyDocumentError` removes them. `--rebuild` is only allowed for the whole project.
 - **Everything is per project** (`.mini-rag/`). `source` and `document_id` come from the path
   relative to the project root; never store absolute paths, and never share a database between
   projects. Prune only touches documents under the indexed directory and never when no supported
@@ -63,6 +72,8 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
   (nothing that can redirect data: host, prompt, paths, cloud models), symlinks inside `.mini-rag/`
   are refused, and no `.env` is loaded, including by ChromaDB (`_env_file=None`, Rust backend
   pinned). Think about this before adding a setting or a file the project can influence.
+- The generator always sends `think` (default `False`): reasoning models otherwise think by default
+  and answers take tens of seconds. Live Ctrl+C tests pass `--think` so generation is slow enough.
 - Chroma metadata values are `str | int` only; omit `page` for non-PDF files rather than using None.
 - Chunk sizes are character-based (~4 chars/token), documented in `chunker.py`.
 

@@ -7,10 +7,10 @@ Not a framework. All processing, embedding and inference stay on the machine.
 
 ## Status
 
-The foundation described below is implemented and verified: 191 unit/integration tests pass, ruff
+The foundation described below is implemented and verified: 226 unit/integration tests pass, ruff
 and `mypy --strict` are clean.
 
-`uv run pytest -m live` (8 tests, ~2 min) passed against local Ollama (`qwen3.5:9b-mlx`,
+`uv run pytest -m live` (9 tests, about 30 s) passed against local Ollama (`qwen3.5:9b-mlx`,
 `nomic-embed-text-v2-moe`): indexing and grounded, cited answers for TXT, Markdown, DOCX and PDF
 (with page numbers), refusal of an unanswerable question, no-op re-indexing, and Ctrl+C during a
 running generation. In a real pty, chat prints "Cancelled." and stays usable, and one-shot `ask`
@@ -29,6 +29,12 @@ exits 130.
 |---|---|
 | Package `mini_rag` (entry `mini_rag.cli:main`) | Matches the repo's existing uv package; spec named both `local_rag` and `mini_rag` |
 | `indexer.py` separate from `rag.py` | RAG orchestration must not touch parsing, chunking or storage |
+| `--rebuild` refused for a subfolder | It drops the whole collection, so it silently discarded every other folder |
+| Files that now hold no text lose their chunks; unparseable ones keep them | Old answers from emptied files are wrong; a half-written or corrupt file should not destroy good content |
+| Keyword writes are single transactions; open compares ids only and repairs duplicates | A concurrent open could duplicate rows permanently; loading all text on each command was wasteful |
+| Reader reopens ChromaDB when `keywords.sqlite3` `data_version` changes | `chat` otherwise missed new chunks in vector search and failed after a rebuild; a new client without `close()` reuses the cached index |
+| Dense reads retry, then drop vanished matches or report "being updated" | Reading mid-write raised errors or returned deleted chunks (this happened before the refresh too) |
+| Model thinking off by default (`RAG_THINK`, `--think`) | About 19x faster on the default model with no clear accuracy difference; see findings below |
 | Chunk ID embeds content hash | New chunks never overwrite old ones, so replacement is add-then-delete and failure-safe |
 | Fingerprint includes chunk size/overlap | Changing chunking re-indexes without `--rebuild` |
 | Embedding model name stored on the collection | Prevents silently mixing incompatible vectors |
@@ -64,7 +70,9 @@ exits 130.
 3. A project's `ignore` file and any prebuilt index are trusted as data; users should create their
    own with `init`. Indexes from the old `./storage` layout are not migrated.
 4. Scanned PDFs have no OCR and are reported as failed.
-5. Live tests assert LLM text loosely (model output is nondeterministic), so a regression in answer
+5. If another process writes continuously with no pauses, each search can take about 1 s of retries.
+   With pauses of 50 ms or more between documents, searches stayed at about 3 ms.
+6. Live tests assert LLM text loosely (model output is nondeterministic), so a regression in answer
    quality would not necessarily fail them.
 
 ## Retrieval findings (from the ai-cookbook review)
@@ -135,6 +143,21 @@ Reviewed `knowledge/hybrid-retrieval` and `knowledge/agentic-rag`. Outcome:
   flatter it. Not enabled by default. Decision: kept as an opt-in feature.
 - **Agentic loop: not pursued.** The cookbook's own comparison puts it at roughly 3-10x tokens;
   a poor fit for a local 9B thinking model and for PDF/DOCX sources.
+
+## Thinking vs no thinking
+
+`qwen3.5:9b-mlx`, 13 hand-written cases with fixed context (no retrieval), one run each; failed
+cases were then read by hand:
+
+| Setting | Correct | Median | Slowest |
+|---|---|---|---|
+| thinking off | 12-13 of 13 | 2.0 s | 5.7 s |
+| thinking on | 12 of 13 | 37.8 s | 137 s (292 s on a rerun) |
+
+The weak case was date arithmetic ("90 days before 31 December"). With thinking on the model refused
+to calculate (2 of 2 runs). With it off, three reruns each gave a different wrong date; the first run
+passed the automatic check. So off fails confidently and on fails cautiously, at far higher cost. The
+automatic checks mis-scored two correct answers, corrected by hand. A small, single-model sample.
 
 ## Roadmap (not started; each is optional and out of scope for v1)
 

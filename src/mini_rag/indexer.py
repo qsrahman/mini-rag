@@ -10,7 +10,13 @@ from pathlib import Path, PurePosixPath
 
 from mini_rag.embeddings import Embedder
 from mini_rag.ingestion.chunker import chunk_documents
-from mini_rag.ingestion.loaders import LoaderError, discover_files, document_id_for, load_file
+from mini_rag.ingestion.loaders import (
+    EmptyDocumentError,
+    LoaderError,
+    discover_files,
+    document_id_for,
+    load_file,
+)
 from mini_rag.models import Document, MiniRagError
 from mini_rag.vector_store import VectorStore
 
@@ -56,6 +62,15 @@ class Indexer:
         for path in files:
             try:
                 created = self._index_file(path, root)
+            except EmptyDocumentError as exc:
+                # The content really is gone, so answering from the old version would be wrong.
+                # A file that merely fails to parse keeps its old content (next branch).
+                reason = str(exc)
+                if self._store.delete_documents([self._document_id(path, root)]):
+                    reason += " (removed previously indexed content)"
+                logger.warning("Failed to index %s: %s", path, reason)
+                summary.failed.append((path, reason))
+                continue
             except (LoaderError, OSError) as exc:
                 # Per-file problems (bad content, unreadable file) are reported, not fatal.
                 # Ollama/store errors are not caught: they affect every file, so they abort the run.
@@ -68,14 +83,14 @@ class Indexer:
                 summary.indexed += 1
                 summary.chunks_created += created
         if prune:
-            present = {document_id_for(f.relative_to(root).as_posix()) for f in files}
+            present = {self._document_id(f, root) for f in files}
             summary.pruned = self._prune(PurePosixPath(directory.relative_to(root)), present)
         return summary
 
     def _prune(self, directory: PurePosixPath, present: set[str]) -> int:
         """Remove indexed documents under `directory` whose files are gone or now ignored.
 
-        Files that exist but failed to load are in `present`, so their old content is kept.
+        Files that exist are in `present`, so ones that failed to parse keep their old content.
         """
         gone = [
             document_id
@@ -91,6 +106,10 @@ class Indexer:
         self._store.delete_documents(gone)
         return len(gone)
 
+    @staticmethod
+    def _document_id(path: Path, root: Path) -> str:
+        return document_id_for(path.relative_to(root).as_posix())
+
     def _fingerprint(self, data: bytes) -> str:
         # Chunking parameters are part of the fingerprint so changing them re-indexes.
         digest = hashlib.sha256(data)
@@ -99,7 +118,7 @@ class Indexer:
 
     def _index_file(self, path: Path, root: Path) -> int | None:
         """Returns the number of chunks stored, or None if the file was already current."""
-        document_id = document_id_for(path.relative_to(root).as_posix())
+        document_id = self._document_id(path, root)
         data = path.read_bytes()
         content_hash = self._fingerprint(data)
         if self._store.is_current(document_id, content_hash):

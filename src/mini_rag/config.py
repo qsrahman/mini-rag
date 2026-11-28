@@ -48,6 +48,8 @@ class Settings:
     chunk_size: int = 400  # approximate tokens, see ingestion/chunker.py
     chunk_overlap: int = 60
     top_k: int = 5
+    # Let the chat model reason before answering. Far slower; off unless asked for.
+    think: bool = False
     rerank: bool = False  # LLM-rescore the top candidates: better order, ~1s per candidate
     retrieval: str = "hybrid"  # "dense" (vectors only) or "hybrid" (vectors + BM25, fused by RRF)
     # Ollama's default context window is small; retrieved chunks would be
@@ -98,6 +100,9 @@ class Settings:
             except ValueError:
                 raise ConfigError(f"{key} must be an integer, got {raw!r}") from None
 
+        def flag(key: str) -> bool:
+            return env.get(key, "false").strip().lower() in ("1", "true", "yes", "on")
+
         return cls(
             llm_model=text("RAG_LLM_MODEL", defaults.llm_model),
             embedding_model=text("RAG_EMBEDDING_MODEL", defaults.embedding_model),
@@ -106,7 +111,8 @@ class Settings:
             chunk_overlap=integer("RAG_CHUNK_OVERLAP", defaults.chunk_overlap),
             top_k=integer("RAG_TOP_K", defaults.top_k),
             retrieval=text("RAG_RETRIEVAL", defaults.retrieval),
-            rerank=text("RAG_RERANK", "false").strip().lower() in ("1", "true", "yes", "on"),
+            rerank=flag("RAG_RERANK"),
+            think=flag("RAG_THINK"),
             num_ctx=integer("RAG_NUM_CTX", defaults.num_ctx),
             collection_name=text("RAG_COLLECTION_NAME", defaults.collection_name),
             system_prompt=text("RAG_SYSTEM_PROMPT", defaults.system_prompt),

@@ -122,3 +122,10 @@ def test_session_uses_persistent_file_history(tmp_path):
     assert isinstance(session.history, FileHistory)
     assert session.history.filename == str(path)
     assert path.parent.is_dir()
+
+
+def test_status_errors_do_not_end_the_shell(tmp_path):
+    h = Harness(tmp_path)
+    h.shell._chunk_count = MagicMock(side_effect=MiniRagError("index is being rebuilt"))
+    assert h.shell.handle("/status")
+    assert "Error: index is being rebuilt" in h.text

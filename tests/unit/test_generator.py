@@ -19,6 +19,7 @@ def test_generate_sends_system_prompt_context_and_question():
     kwargs = client.chat.call_args.kwargs
     assert kwargs["model"] == "llm"
     assert kwargs["options"] == {"num_ctx": 4096}
+    assert kwargs["think"] is False
     system, user = kwargs["messages"]
     assert system == {"role": "system", "content": "SYS"}
     assert "<documents>\n[S1] ctx\n</documents>" in user["content"]
@@ -37,3 +38,10 @@ def test_empty_response_is_an_error():
     client.chat.return_value = reply("")
     with pytest.raises(OllamaError, match="empty"):
         Generator("llm", client=client).generate("q", "c")
+
+
+def test_thinking_can_be_turned_on():
+    client = MagicMock()
+    client.chat.return_value = reply("a")
+    Generator("llm", think=True, client=client).generate("q", "c")
+    assert client.chat.call_args.kwargs["think"] is True

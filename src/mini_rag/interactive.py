@@ -65,6 +65,7 @@ def format_status(settings: Settings, chunk_count: int) -> str:
     return (
         f"Project: {settings.project_root}\n"
         f"Model: {settings.llm_model}\n"
+        f"Thinking: {'on' if settings.think else 'off'}\n"
         f"Embedding: {settings.embedding_model}\n"
         f"Ollama: {settings.ollama_host}\n"
         f"Database: {settings.vector_db_path}\n"
@@ -177,7 +178,10 @@ class ChatShell:
         if name == "/help":
             self._write(HELP_TEXT, "")
         elif name == "/status":
-            self._write(self.status_text(), "")
+            try:
+                self._write(self.status_text(), "")
+            except MiniRagError as exc:
+                self._write(f"Error: {exc}", "ansired")
         elif name == "/clear":
             clear()
         else:

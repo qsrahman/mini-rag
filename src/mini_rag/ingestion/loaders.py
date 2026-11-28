@@ -27,6 +27,10 @@ class LoaderError(MiniRagError):
     pass
 
 
+class EmptyDocumentError(LoaderError):
+    """The file was read successfully and holds no text (unlike one that could not be read)."""
+
+
 def _read_text(data: bytes) -> _Pages:
     try:
         return [(None, data.decode("utf-8-sig"))]
@@ -103,7 +107,7 @@ def discover_files(
 def load_file(path: Path, root: Path | None = None, data: bytes | None = None) -> list[Document]:
     """Extract text from one file (`data` = its bytes, if the caller already read them).
 
-    Raises LoaderError if nothing usable comes out.
+    Raises LoaderError if the file cannot be read, EmptyDocumentError if it has no text.
     """
     reader = _READERS.get(path.suffix.lower())
     if reader is None:
@@ -126,5 +130,5 @@ def load_file(path: Path, root: Path | None = None, data: bytes | None = None) -
             metadata["page"] = page
         documents.append(Document(text=text, metadata=metadata))
     if not documents:
-        raise LoaderError(f"{path.name}: no extractable text")
+        raise EmptyDocumentError(f"{path.name}: no extractable text")
     return documents

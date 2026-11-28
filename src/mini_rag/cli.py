@@ -54,6 +54,7 @@ def build_services(settings: Settings, rebuild: bool = False) -> Services:
         settings.ollama_host,
         settings.system_prompt,
         settings.num_ctx,
+        settings.think,
     )
     reranker = (
         LlmReranker(settings.llm_model, settings.ollama_host, min(settings.num_ctx, 4096))
@@ -85,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
     query = argparse.ArgumentParser(add_help=False, parents=[common])
     query.add_argument("--top-k", type=int, help="number of chunks to retrieve")
     query.add_argument("--model", dest="llm_model", help="Ollama chat model")
+    query.add_argument(
+        "--think",
+        action=argparse.BooleanOptionalAction,
+        help="let the model reason before answering (much slower)",
+    )
 
     parser = argparse.ArgumentParser(
         prog="mini-rag", description="Chat with your documents using local models."
@@ -99,7 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument(
         "directory", type=Path, nargs="?", help="folder inside the project (default: all of it)"
     )
-    index.add_argument("--rebuild", action="store_true", help="drop the collection and re-index")
+    index.add_argument(
+        "--rebuild", action="store_true", help="drop the collection and re-index the whole project"
+    )
     index.add_argument(
         "--prune",
         action="store_true",
@@ -143,6 +151,7 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
             "top_k",
             "retrieval",
             "rerank",
+            "think",
             "chunk_size",
             "chunk_overlap",
         )
@@ -167,6 +176,11 @@ def run_index(args: argparse.Namespace, settings: Settings) -> int:
         raise MiniRagError(f"Not a directory: {args.directory}")
     if not directory.is_relative_to(root):
         raise MiniRagError(f"{directory} is outside the project {root}")
+    if args.rebuild and directory != root:
+        raise MiniRagError(
+            "--rebuild drops the whole project index, so it cannot be limited to a folder. "
+            "Run `mini-rag index --rebuild`, or leave out --rebuild to re-index just that folder."
+        )
     services = build_services(settings, rebuild=args.rebuild)
     indexer = Indexer(
         services.embedder,

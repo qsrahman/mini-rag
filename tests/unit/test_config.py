@@ -45,3 +45,9 @@ def test_retrieval_and_rerank_settings():
     assert (s.retrieval, s.rerank) == ("dense", True)
     with pytest.raises(ConfigError, match="retrieval"):
         Settings.from_env({"RAG_RETRIEVAL": "sparse"})
+
+
+@pytest.mark.parametrize("raw,expected", [("true", True), ("1", True), ("off", False), ("", False)])
+def test_thinking_setting(raw, expected):
+    assert Settings.from_env({}).think is False
+    assert Settings.from_env({"RAG_THINK": raw}).think is expected

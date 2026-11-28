@@ -395,3 +395,70 @@ def test_cwd_dotenv_cannot_reconfigure_chroma(tmp_path, monkeypatch):
     settings = store._client.get_settings()
     assert settings.chroma_api_impl == "chromadb.api.rust.RustBindingsAPI"
     assert settings.chroma_server_host is None
+
+
+def test_rebuild_of_a_subfolder_is_refused(docs, project, capsys):
+    (docs / "sub").mkdir()
+    (docs / "sub" / "deep.txt").write_text("Glaciers move slowly down mountain valleys.")
+    main(["index", *project])
+    capsys.readouterr()
+
+    assert main(["index", str(docs / "sub"), "--rebuild", *project]) == 1
+
+    assert "whole project" in capsys.readouterr().err
+    assert project_store(docs).count() == 5
+
+
+def test_rebuild_naming_the_project_folder_is_allowed(docs, project, capsys):
+    main(["index", *project])
+    capsys.readouterr()
+    main(["index", str(docs), "--rebuild", *project])
+    assert "Files indexed: 4" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("prune", [False, True])
+def test_emptied_files_stop_answering_with_old_content(docs, embedder, store, prune):
+    indexer = make_indexer(embedder, store)
+    indexer.index_directory(docs)
+    (docs / "cooking.txt").write_text("   \n")
+    make_pdf(docs / "birds.pdf", [""])  # e.g. replaced by a scan without a text layer
+
+    summary = indexer.index_directory(docs, prune=prune)
+
+    assert store.count() == 2
+    assert store.keyword_query("pasta penguins", 5) == []
+    reasons = {path.name: reason for path, reason in summary.failed}
+    assert "removed" in reasons["cooking.txt"] and "removed" in reasons["birds.pdf"]
+    assert "removed" not in reasons["empty.txt"]  # it never had any content
+
+
+def test_unparseable_files_keep_their_old_content(docs, embedder, store):
+    indexer = make_indexer(embedder, store)
+    indexer.index_directory(docs)
+    (docs / "birds.pdf").write_bytes(b"half written garbage")
+    indexer.index_directory(docs, prune=True)
+    assert store.count() == 4
+    assert store.keyword_query("penguins", 5)
+
+
+@pytest.mark.parametrize(
+    "config,flags,expected",
+    [
+        ("", [], False),
+        ("RAG_THINK=true", [], True),
+        ("RAG_THINK=true", ["--no-think"], False),
+        ("", ["--think"], True),
+    ],
+)
+def test_thinking_reaches_the_generator(docs, project, monkeypatch, config, flags, expected):
+    monkeypatch.delenv("RAG_THINK", raising=False)
+    (docs / ".mini-rag" / "config.env").write_text(config)
+    seen = {}
+
+    def fake_generator(model, host, system_prompt, num_ctx, think):
+        seen["think"] = think
+        return MagicMock()
+
+    monkeypatch.setattr("mini_rag.cli.Generator", fake_generator)
+    assert main(["status", *project, *flags]) == 0
+    assert seen["think"] is expected

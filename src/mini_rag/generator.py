@@ -15,12 +15,14 @@ class Generator:
         host: str = "http://localhost:11434",
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         num_ctx: int = 8192,
+        think: bool = False,
         client: ollama.Client | None = None,
     ) -> None:
         self.model = model
         self._host = host
         self._system_prompt = system_prompt
         self._num_ctx = num_ctx
+        self._think = think
         self._client = client or ollama.Client(host=host)
 
     def generate(self, question: str, context: str) -> str:
@@ -33,6 +35,8 @@ class Generator:
                     {"role": "system", "content": self._system_prompt},
                     {"role": "user", "content": user_message},
                 ],
+                # Always sent: models that can reason do so by default, which is very slow.
+                think=self._think,
                 options={"num_ctx": self._num_ctx},
             )
         answer = (response.message.content or "").strip()

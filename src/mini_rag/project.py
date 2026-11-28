@@ -31,6 +31,7 @@ PROJECT_CONFIG_KEYS = frozenset(
         "RAG_TOP_K",
         "RAG_RETRIEVAL",
         "RAG_RERANK",
+        "RAG_THINK",
         "RAG_NUM_CTX",
     }
 )
@@ -48,6 +49,7 @@ _CONFIG_TEMPLATE = """\
 # RAG_TOP_K=5
 # RAG_RETRIEVAL=hybrid
 # RAG_RERANK=false
+# RAG_THINK=false
 # RAG_NUM_CTX=8192
 """
 

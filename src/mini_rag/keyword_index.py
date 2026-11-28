@@ -39,24 +39,52 @@ class KeywordIndex:
     def ids(self) -> set[str]:
         return {row[0] for row in self._db.execute(f"SELECT chunk_id FROM {self._table}")}
 
+    def data_version(self) -> int:
+        """Changes whenever another connection (i.e. another process) commits to the database."""
+        version: int = self._db.execute("PRAGMA data_version").fetchone()[0]
+        return version
+
+    def row_count(self) -> int:
+        count: int = self._db.execute(f"SELECT count(*) FROM {self._table}").fetchone()[0]
+        return count
+
+    # Each write is one transaction: another process must never see, or add to, a half-done
+    # change, otherwise rows get duplicated.
+
     def add(self, rows: Iterable[tuple[str, str, str, str]]) -> None:
         """Insert (chunk_id, source, document_id, text) rows."""
         with self._db:
-            self._db.executemany(
-                f"INSERT INTO {self._table}(chunk_id, source, document_id, text) "
-                "VALUES (?, ?, ?, ?)",
-                rows,
-            )
+            self._insert(rows)
+
+    def replace(self, old_ids: Iterable[str], rows: Iterable[tuple[str, str, str, str]]) -> None:
+        """Delete `old_ids` and insert `rows` atomically."""
+        with self._db:
+            self._delete(old_ids)
+            self._insert(rows)
+
+    def rebuild(self, rows: Iterable[tuple[str, str, str, str]]) -> None:
+        """Replace the whole index atomically."""
+        with self._db:
+            self._db.execute(f"DELETE FROM {self._table}")
+            self._insert(rows)
 
     def delete(self, chunk_ids: Iterable[str]) -> None:
         with self._db:
-            self._db.executemany(
-                f"DELETE FROM {self._table} WHERE chunk_id = ?", [(i,) for i in chunk_ids]
-            )
+            self._delete(chunk_ids)
 
     def clear(self) -> None:
-        with self._db:
-            self._db.execute(f"DELETE FROM {self._table}")
+        self.rebuild([])
+
+    def _insert(self, rows: Iterable[tuple[str, str, str, str]]) -> None:
+        self._db.executemany(
+            f"INSERT INTO {self._table}(chunk_id, source, document_id, text) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+
+    def _delete(self, chunk_ids: Iterable[str]) -> None:
+        self._db.executemany(
+            f"DELETE FROM {self._table} WHERE chunk_id = ?", [(i,) for i in chunk_ids]
+        )
 
     def search(self, query: str, limit: int, filters: Mapping[str, str] | None = None) -> list[str]:
         """Chunk ids ranked by BM25, best first. Any query word may match (OR).

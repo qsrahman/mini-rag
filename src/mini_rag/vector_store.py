@@ -6,13 +6,15 @@ import contextlib
 import hashlib
 import logging
 import random
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import chromadb
+from chromadb.api import ClientAPI
 from chromadb.config import Settings as ChromaSettings
-from chromadb.errors import InvalidArgumentError, NotFoundError
+from chromadb.errors import InternalError, InvalidArgumentError, NotFoundError
 
 from mini_rag.keyword_index import KeywordIndex
 from mini_rag.models import Chunk, Metadata, MiniRagError, RetrievedChunk
@@ -20,6 +22,8 @@ from mini_rag.models import Chunk, Metadata, MiniRagError, RetrievedChunk
 logger = logging.getLogger(__name__)
 
 _WRITE_BATCH = 1000
+_READ_ATTEMPTS = 5
+_RETRY_DELAY = 0.1  # seconds, growing with each attempt
 
 
 class VectorStoreError(MiniRagError):
@@ -53,17 +57,13 @@ class VectorStore:
         embedding_model: str,
         rebuild: bool = False,
     ) -> None:
+        self._path = path
         self._embedding_model = embedding_model
         self._collection_name = collection_name
-        # Chroma's settings would otherwise be read from a `.env` in the current folder, letting a
-        # downloaded folder reconfigure it, including which classes it imports. The Rust backend is
-        # pinned because the Python one unpickles files found in the database directory.
-        chroma_settings = ChromaSettings(  # type: ignore[call-arg]  # pydantic-settings arg
-            _env_file=None,
-            chroma_api_impl="chromadb.api.rust.RustBindingsAPI",
-            anonymized_telemetry=False,
-        )
-        self._client = chromadb.PersistentClient(path=str(path), settings=chroma_settings)
+        self._keywords = KeywordIndex(path / "keywords.sqlite3", _keyword_table(collection_name))
+        # Read before loading anything, so a change made while we load is not missed.
+        self._seen_version = self._keywords.data_version()
+        self._client = self._new_client()
         if rebuild:
             self._delete_collection()
         try:
@@ -74,20 +74,54 @@ class VectorStore:
         except InvalidArgumentError as exc:
             raise VectorStoreError(f"Invalid collection name {collection_name!r}: {exc}") from exc
         self._check_embedding_model()
-        self._keywords = KeywordIndex(path / "keywords.sqlite3", _keyword_table(collection_name))
         if rebuild:
             self._keywords.clear()
         self._sync_keywords()
 
+    def _new_client(self) -> ClientAPI:
+        # Chroma's settings would otherwise be read from a `.env` in the current folder, letting a
+        # downloaded folder reconfigure it, including which classes it imports. The Rust backend is
+        # pinned because the Python one unpickles files found in the database directory.
+        chroma_settings = ChromaSettings(  # type: ignore[call-arg]  # pydantic-settings arg
+            _env_file=None,
+            chroma_api_impl="chromadb.api.rust.RustBindingsAPI",
+            anonymized_telemetry=False,
+        )
+        return chromadb.PersistentClient(path=str(self._path), settings=chroma_settings)
+
+    def _refresh_if_changed(self, force: bool = False) -> None:
+        """Reopen ChromaDB after another process (e.g. `index` while `chat` runs) changed it.
+
+        ChromaDB caches its vector index per process: without this, searches miss new chunks, and
+        fail outright after a rebuild. Every write ends with a keyword-index commit, which is what
+        signals the change. Nothing is written here, so we never get in the indexer's way.
+        """
+        version = self._keywords.data_version()
+        if version == self._seen_version and not force:
+            return
+        logger.info("Index changed by another process; reopening")
+        # close() releases the cached index; a new client alone would reuse it.
+        self._client.close()  # type: ignore[attr-defined]  # missing from the ClientAPI stub
+        self._client = self._new_client()
+        try:
+            self._collection = self._client.get_collection(self._collection_name)
+        except NotFoundError as exc:
+            raise VectorStoreError(
+                "The index is being rebuilt by another process. Try again in a moment."
+            ) from exc
+        self._check_embedding_model()
+        self._seen_version = version  # only after success, so a failure is retried
+
     def _sync_keywords(self) -> None:
         """Rebuild the keyword index from ChromaDB if the two disagree (first run after
-        upgrade, or an interrupted write)."""
-        stored = self._collection.get(include=["documents", "metadatas"])
-        if set(stored["ids"]) == self._keywords.ids():
+        upgrade, an interrupted write, or duplicate rows)."""
+        # Ids only: this runs on every command, so chunk text is fetched only when needed.
+        ids = self._collection.get(include=[])["ids"]
+        if self._keywords.row_count() == len(ids) and self._keywords.ids() == set(ids):
             return
+        stored = self._collection.get(include=["documents", "metadatas"])
         logger.info("Rebuilding keyword index from %d chunks", len(stored["ids"]))
-        self._keywords.clear()
-        self._keywords.add(
+        self._keywords.rebuild(
             _keyword_row(cid, text, meta)
             for cid, text, meta in zip(
                 stored["ids"], stored["documents"] or [], stored["metadatas"] or [], strict=True
@@ -113,6 +147,7 @@ class VectorStore:
         return self._collection_name
 
     def count(self) -> int:
+        self._refresh_if_changed()
         return self._collection.count()
 
     def chunk_ids(self) -> set[str]:
@@ -135,12 +170,16 @@ class VectorStore:
         metadatas = self._collection.get(include=["metadatas"])["metadatas"] or []
         return {str(m["document_id"]): str(m["source"]) for m in metadatas}
 
-    def delete_documents(self, document_ids: Iterable[str]) -> None:
+    def delete_documents(self, document_ids: Iterable[str]) -> int:
+        """Remove documents; returns the number of chunks removed."""
+        removed = 0
         for document_id in document_ids:
             ids = self._collection.get(where={"document_id": document_id}, include=[])["ids"]
             if ids:
                 self._collection.delete(ids=ids)
                 self._keywords.delete(ids)
+                removed += len(ids)
+        return removed
 
     def is_current(self, document_id: str, content_hash: str) -> bool:
         """True if the document is indexed and every stored chunk matches `content_hash`."""
@@ -172,20 +211,22 @@ class VectorStore:
         stale = sorted(set(existing) - set(ids))
         if stale:
             self._collection.delete(ids=stale)
-        self._keywords.delete([*ids, *stale])
-        self._keywords.add(
-            _keyword_row(cid, c.text, c.metadata) for cid, c in zip(ids, chunks, strict=True)
+        self._keywords.replace(
+            [*ids, *stale],
+            (_keyword_row(cid, c.text, c.metadata) for cid, c in zip(ids, chunks, strict=True)),
         )
 
     def keyword_query(
         self, text: str, top_k: int, where: dict[str, Any] | None = None
     ) -> list[RetrievedChunk]:
         """BM25 matches (no distance). Only `source` / `document_id` equality filters work."""
+        self._refresh_if_changed()
         filters = {k: v for k, v in (where or {}).items() if isinstance(v, str)}
         if len(filters) != len(where or {}):
             raise VectorStoreError("keyword search only supports string equality filters")
         try:
-            ids = self._keywords.search(text, top_k, filters)
+            # Chroma rejects repeated ids, so never let a duplicate row break a query.
+            ids = list(dict.fromkeys(self._keywords.search(text, top_k, filters)))
         except ValueError as exc:
             raise VectorStoreError(str(exc)) from exc
         if not ids:
@@ -205,6 +246,30 @@ class VectorStore:
         top_k: int,
         where: dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
+        """Dense search. Retries while another process is part-way through writing, when
+        ChromaDB may fail or return chunks that have just been deleted."""
+        failure: Exception | None = None
+        for attempt in range(_READ_ATTEMPTS):
+            if attempt:
+                time.sleep(_RETRY_DELAY * attempt)
+            self._refresh_if_changed(force=attempt > 0)
+            try:
+                found = self._dense_search(embedding, top_k, where)
+            except (InternalError, NotFoundError) as exc:
+                failure = exc
+                continue
+            complete = [r for r in found if r is not None]
+            if len(complete) == len(found) or attempt == _READ_ATTEMPTS - 1:
+                return complete
+        raise VectorStoreError(
+            "The index is being updated by another process and could not be read. "
+            f"Try again in a moment. ({failure})"
+        ) from failure
+
+    def _dense_search(
+        self, embedding: Sequence[float], top_k: int, where: dict[str, Any] | None
+    ) -> list[RetrievedChunk | None]:
+        """One attempt; None stands for a match whose chunk no longer exists."""
         if self._collection.count() == 0:
             return []
         result = self._collection.query(
@@ -217,7 +282,9 @@ class VectorStore:
         metadatas = (result["metadatas"] or [[]])[0]
         distances = (result["distances"] or [[]])[0]
         return [
-            RetrievedChunk(
+            None
+            if text is None or meta is None
+            else RetrievedChunk(
                 chunk=Chunk(
                     text=text,
                     metadata={k: v for k, v in meta.items() if isinstance(v, str | int)},
