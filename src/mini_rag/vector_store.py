@@ -55,9 +55,15 @@ class VectorStore:
     ) -> None:
         self._embedding_model = embedding_model
         self._collection_name = collection_name
-        self._client = chromadb.PersistentClient(
-            path=str(path), settings=ChromaSettings(anonymized_telemetry=False)
+        # Chroma's settings would otherwise be read from a `.env` in the current folder, letting a
+        # downloaded folder reconfigure it, including which classes it imports. The Rust backend is
+        # pinned because the Python one unpickles files found in the database directory.
+        chroma_settings = ChromaSettings(  # type: ignore[call-arg]  # pydantic-settings arg
+            _env_file=None,
+            chroma_api_impl="chromadb.api.rust.RustBindingsAPI",
+            anonymized_telemetry=False,
         )
+        self._client = chromadb.PersistentClient(path=str(path), settings=chroma_settings)
         if rebuild:
             self._delete_collection()
         try:
@@ -125,9 +131,9 @@ class VectorStore:
         return random.Random(seed).sample(pool, min(n, len(pool)))
 
     def indexed_documents(self) -> dict[str, str]:
-        """document_id -> absolute path ('' for documents indexed before paths were recorded)."""
+        """document_id -> source path relative to the project."""
         metadatas = self._collection.get(include=["metadatas"])["metadatas"] or []
-        return {str(m["document_id"]): str(m.get("path", "")) for m in metadatas}
+        return {str(m["document_id"]): str(m["source"]) for m in metadatas}
 
     def delete_documents(self, document_ids: Iterable[str]) -> None:
         for document_id in document_ids:

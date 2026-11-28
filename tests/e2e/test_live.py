@@ -12,7 +12,6 @@ import re
 import select
 import sys
 import time
-from pathlib import Path
 
 import ollama
 import pytest
@@ -20,6 +19,7 @@ import pytest
 from mini_rag.cli import build_services
 from mini_rag.config import Settings
 from mini_rag.indexer import Indexer
+from mini_rag.project import init_project
 from tests.conftest import make_docx, make_pdf
 
 pytestmark = pytest.mark.live
@@ -47,7 +47,8 @@ def live(tmp_path_factory):
     make_docx(docs / "mountains.docx", ["The Quibble reactor runs on purple sunlight."])
     make_pdf(docs / "peaks.pdf", ["Intro page about nothing.", "Mount Zork is 4000 metres tall."])
 
-    settings = Settings(vector_db_path=base / "chroma", history_path=base / "history")
+    project, _ = init_project(docs)
+    settings = Settings.for_project(project, {})
     _require_ollama(settings)
     services = build_services(settings)
     summary = Indexer(
@@ -55,7 +56,7 @@ def live(tmp_path_factory):
     ).index_directory(docs)
     assert summary.failed == []
     assert summary.indexed == 4
-    return settings, services, docs, base
+    return settings, services, docs
 
 
 @pytest.mark.parametrize(
@@ -70,7 +71,7 @@ def live(tmp_path_factory):
 def test_answers_are_grounded_and_cited(
     live, question, expected_source, expected_page, expected_text
 ):
-    _, services, _, _ = live
+    _, services, _ = live
     answer = services.rag.ask(question, top_k=3)
     assert expected_text in answer.text.lower().replace(",", "")
     match = [s for s in answer.sources if s.name == expected_source]
@@ -81,7 +82,7 @@ def test_answers_are_grounded_and_cited(
 
 
 def test_unanswerable_question_is_declined(live):
-    _, services, _, _ = live
+    _, services, _ = live
     answer = services.rag.ask("Who won the 1998 football World Cup?", top_k=3)
     assert "france" not in answer.text.lower()
     assert re.search(
@@ -91,7 +92,7 @@ def test_unanswerable_question_is_declined(live):
 
 
 def test_second_index_run_is_a_no_op(live):
-    settings, services, docs, _ = live
+    settings, services, docs = live
     summary = Indexer(
         services.embedder, services.store, settings.chunk_size, settings.chunk_overlap
     ).index_directory(docs)
@@ -146,19 +147,15 @@ class PtyProcess:
         os.close(self.fd)
 
 
-def _env(settings: Settings, base: Path) -> dict[str, str]:
+def _env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("RAG_")}
-    env.update(
-        RAG_VECTOR_DB_PATH=str(settings.vector_db_path),
-        RAG_HISTORY_PATH=str(settings.history_path),
-        PYTHONWARNINGS="ignore",
-    )
+    env.update(PYTHONWARNINGS="ignore")
     return env
 
 
 def test_ctrl_c_cancels_generation_in_chat_and_shell_survives(live):
-    settings, _, _, base = live
-    proc = PtyProcess(["chat"], _env(settings, base))
+    settings = live[0]
+    proc = PtyProcess(["chat", "--project", str(settings.project_root)], _env())
     try:
         assert proc.wait_for("You >", 90), proc._text
         proc.send(b"Explain everything you know about Mount Zork in great detail.\r")
@@ -178,10 +175,9 @@ def test_ctrl_c_cancels_generation_in_chat_and_shell_survives(live):
 
 
 def test_ctrl_c_during_one_shot_ask_exits_130(live):
-    settings, _, _, base = live
-    proc = PtyProcess(
-        ["ask", "Explain everything about Mount Zork in great detail."], _env(settings, base)
-    )
+    settings = live[0]
+    question = "Explain everything about Mount Zork in great detail."
+    proc = PtyProcess(["ask", question, "--project", str(settings.project_root)], _env())
     try:
         assert proc.wait_for("Searching documents", 60), proc._text
         time.sleep(1.5)

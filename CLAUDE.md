@@ -20,7 +20,7 @@ Add dependencies with `uv add` / `uv add --dev`; commit `uv.lock`.
 
 ## Layout
 
-`src/mini_rag/`: `cli.py` (argparse + wiring), `interactive.py` (prompt_toolkit shell and output
+`src/mini_rag/`: `cli.py` (argparse + wiring), `project.py` (`.mini-rag/` projects), `interactive.py` (prompt_toolkit shell and output
 formatting), `config.py`, `models.py`, `indexer.py`, `retriever.py`, `generator.py`, `rag.py`,
 `embeddings.py`, `evaluation.py`, `keyword_index.py`, `reranker.py`, `vector_store.py`, `ollama_utils.py`, `ingestion/{loaders,chunker}.py`.
 Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.py`.
@@ -55,8 +55,14 @@ Tests in `tests/unit` and `tests/integration`; shared fakes in `tests/conftest.p
   `find_unknown_citations` parses that style. Change them together.
 - **ChromaDB is the source of truth; the FTS5 keyword index is derived.** Every write path in
   `VectorStore` (replace, delete) must update both; `_sync_keywords` repairs drift on open.
-- Chunk metadata carries the absolute `path` (used by `index --prune`); prune only touches documents
-  under the given directory and never when no supported files are found there.
+- **Everything is per project** (`.mini-rag/`). `source` and `document_id` come from the path
+  relative to the project root; never store absolute paths, and never share a database between
+  projects. Prune only touches documents under the indexed directory and never when no supported
+  files are found there.
+- **A project folder is untrusted input.** Only `PROJECT_CONFIG_KEYS` are read from `config.env`
+  (nothing that can redirect data: host, prompt, paths, cloud models), symlinks inside `.mini-rag/`
+  are refused, and no `.env` is loaded, including by ChromaDB (`_env_file=None`, Rust backend
+  pinned). Think about this before adding a setting or a file the project can influence.
 - Chroma metadata values are `str | int` only; omit `page` for non-PDF files rather than using None.
 - Chunk sizes are character-based (~4 chars/token), documented in `chunker.py`.
 

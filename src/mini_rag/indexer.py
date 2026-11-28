@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from mini_rag.embeddings import Embedder
 from mini_rag.ingestion.chunker import chunk_documents
@@ -23,21 +24,34 @@ class IndexSummary:
     unchanged: int = 0
     chunks_created: int = 0
     pruned: int = 0  # documents removed because their file no longer exists
-    unprunable: int = 0  # documents indexed before paths were recorded; need --rebuild
     failed: list[tuple[Path, str]] = field(default_factory=list)
 
 
 class Indexer:
     def __init__(
-        self, embedder: Embedder, store: VectorStore, chunk_size: int, chunk_overlap: int
+        self,
+        embedder: Embedder,
+        store: VectorStore,
+        chunk_size: int,
+        chunk_overlap: int,
+        root: Path | None = None,
+        ignore: Sequence[str] = (),
     ) -> None:
+        """`root` is the project folder that document paths are relative to; without it, the
+        directory being indexed is its own root."""
         self._embedder = embedder
         self._store = store
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
+        self._root = root
+        self._ignore = ignore
 
-    def index_directory(self, root: Path, prune: bool = False) -> IndexSummary:
-        files = discover_files(root)
+    def index_directory(self, directory: Path, prune: bool = False) -> IndexSummary:
+        directory = directory.resolve()
+        root = (self._root or directory).resolve()
+        if not directory.is_relative_to(root):
+            raise MiniRagError(f"{directory} is outside the project {root}")
+        files = discover_files(directory, root, self._ignore)
         summary = IndexSummary(discovered=len(files))
         for path in files:
             try:
@@ -54,31 +68,28 @@ class Indexer:
                 summary.indexed += 1
                 summary.chunks_created += created
         if prune:
-            self._prune(root, {document_id_for(f) for f in files}, summary)
+            present = {document_id_for(f.relative_to(root).as_posix()) for f in files}
+            summary.pruned = self._prune(PurePosixPath(directory.relative_to(root)), present)
         return summary
 
-    def _prune(self, root: Path, present: set[str], summary: IndexSummary) -> None:
-        """Remove indexed documents under `root` whose files are gone.
+    def _prune(self, directory: PurePosixPath, present: set[str]) -> int:
+        """Remove indexed documents under `directory` whose files are gone or now ignored.
 
         Files that exist but failed to load are in `present`, so their old content is kept.
         """
-        root = root.resolve()
-        gone = []
-        for document_id, path in self._store.indexed_documents().items():
-            if document_id in present:
-                continue
-            if not path:
-                summary.unprunable += 1
-            elif Path(path).is_relative_to(root):
-                gone.append(document_id)
+        gone = [
+            document_id
+            for document_id, source in self._store.indexed_documents().items()
+            if document_id not in present and PurePosixPath(source).is_relative_to(directory)
+        ]
         if gone and not present:
             # An empty or unmounted directory must not wipe the index.
             raise MiniRagError(
-                f"Refusing to prune: no supported files found under {root}, "
+                f"Refusing to prune: no supported files found, "
                 f"but {len(gone)} indexed document(s) live there."
             )
         self._store.delete_documents(gone)
-        summary.pruned = len(gone)
+        return len(gone)
 
     def _fingerprint(self, data: bytes) -> str:
         # Chunking parameters are part of the fingerprint so changing them re-indexes.
@@ -88,7 +99,7 @@ class Indexer:
 
     def _index_file(self, path: Path, root: Path) -> int | None:
         """Returns the number of chunks stored, or None if the file was already current."""
-        document_id = document_id_for(path)
+        document_id = document_id_for(path.relative_to(root).as_posix())
         data = path.read_bytes()
         content_hash = self._fingerprint(data)
         if self._store.is_current(document_id, content_hash):

@@ -9,8 +9,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from mini_rag.config import Settings
 from mini_rag.embeddings import OllamaEmbedder
 from mini_rag.evaluation import (
@@ -23,8 +21,9 @@ from mini_rag.evaluation import (
 )
 from mini_rag.generator import Generator
 from mini_rag.indexer import Indexer
-from mini_rag.interactive import ChatShell, format_answer, working
+from mini_rag.interactive import ChatShell, format_answer, format_status, working
 from mini_rag.models import MiniRagError
+from mini_rag.project import Project, init_project, open_project
 from mini_rag.rag import RagService
 from mini_rag.reranker import LlmReranker
 from mini_rag.retriever import Retriever
@@ -67,7 +66,9 @@ def build_services(settings: Settings, rebuild: bool = False) -> Services:
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--db-path", type=Path, dest="vector_db_path", help="ChromaDB directory")
+    common.add_argument(
+        "--project", type=Path, help="project folder (default: found from the current folder)"
+    )
     common.add_argument("--collection", dest="collection_name", help="collection name")
     common.add_argument("--embedding-model", help="Ollama embedding model")
     common.add_argument("--ollama-host", help="Ollama server URL")
@@ -90,22 +91,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    index = commands.add_parser("index", parents=[common], help="index a directory of documents")
-    index.add_argument("directory", type=Path)
+    init = commands.add_parser("init", help="make a folder a mini-rag project")
+    init.add_argument("directory", type=Path, nargs="?", default=Path("."))
+    init.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
+
+    index = commands.add_parser("index", parents=[common], help="index the project's documents")
+    index.add_argument(
+        "directory", type=Path, nargs="?", help="folder inside the project (default: all of it)"
+    )
     index.add_argument("--rebuild", action="store_true", help="drop the collection and re-index")
     index.add_argument(
         "--prune",
         action="store_true",
-        help="also remove indexed documents under DIRECTORY whose files no longer exist",
+        help="also remove indexed documents whose files were deleted or are now ignored",
     )
     index.add_argument("--chunk-size", type=int, help="chunk size in (approximate) tokens")
     index.add_argument("--chunk-overlap", type=int, help="chunk overlap in (approximate) tokens")
 
     ask = commands.add_parser("ask", parents=[query], help="ask one question")
     ask.add_argument("question")
-    ask.add_argument("--source", help="only search the file with this source name")
+    ask.add_argument("--source", help="only search this file (path relative to the project)")
 
     commands.add_parser("chat", parents=[query], help="interactive chat")
+    commands.add_parser("status", parents=[query], help="show the project and index in use")
 
     evaluation = commands.add_parser(
         "eval", parents=[common], help="measure retrieval quality on a frozen question set"
@@ -124,13 +132,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _settings_from_args(args: argparse.Namespace) -> Settings:
+    project = open_project(args.project)
     overrides = {
         key: getattr(args, key, None)
         for key in (
             "llm_model",
             "embedding_model",
             "ollama_host",
-            "vector_db_path",
             "collection_name",
             "top_k",
             "retrieval",
@@ -139,18 +147,37 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
             "chunk_overlap",
         )
     }
-    return Settings.from_env().with_overrides(**overrides)
+    return Settings.for_project(project).with_overrides(**overrides)
+
+
+def run_init(args: argparse.Namespace) -> int:
+    project, outer = init_project(args.directory)
+    print(f"Created project in {project.root}")
+    if outer:
+        print(f"note: this folder is inside another project: {outer}", file=sys.stderr)
+    print("Next: run `mini-rag index` from this folder.")
+    return 0
 
 
 def run_index(args: argparse.Namespace, settings: Settings) -> int:
-    if not args.directory.is_dir():
+    root = settings.project_root
+    directory = root if args.directory is None else args.directory.resolve()
+    # Check before building services: --rebuild must not drop data for a bad argument.
+    if not directory.is_dir():
         raise MiniRagError(f"Not a directory: {args.directory}")
+    if not directory.is_relative_to(root):
+        raise MiniRagError(f"{directory} is outside the project {root}")
     services = build_services(settings, rebuild=args.rebuild)
     indexer = Indexer(
-        services.embedder, services.store, settings.chunk_size, settings.chunk_overlap
+        services.embedder,
+        services.store,
+        settings.chunk_size,
+        settings.chunk_overlap,
+        root,
+        Project(root).ignore_patterns(),
     )
     with working("Indexing documents..."):
-        summary = indexer.index_directory(args.directory, prune=args.prune)
+        summary = indexer.index_directory(directory, prune=args.prune)
     print("Document indexing completed.\n")
     print(f"Files discovered: {summary.discovered}")
     print(f"Files indexed: {summary.indexed}")
@@ -159,12 +186,6 @@ def run_index(args: argparse.Namespace, settings: Settings) -> int:
     print(f"Chunks created: {summary.chunks_created}")
     if args.prune:
         print(f"Documents pruned: {summary.pruned}")
-        if summary.unprunable:
-            print(
-                f"note: {summary.unprunable} document(s) were indexed before paths were recorded "
-                "and cannot be pruned; use --rebuild to purge them",
-                file=sys.stderr,
-            )
     for path, reason in summary.failed:
         print(f"  FAILED {path}: {reason}", file=sys.stderr)
     return 1 if summary.failed else 0
@@ -182,6 +203,12 @@ def run_ask(args: argparse.Namespace, settings: Settings) -> int:
 def run_chat(args: argparse.Namespace, settings: Settings) -> int:
     services = build_services(settings)
     return ChatShell(services.rag, settings, services.store.count).run()
+
+
+def run_status(args: argparse.Namespace, settings: Settings) -> int:
+    services = build_services(settings)
+    print(format_status(settings, services.store.count()))
+    return 0
 
 
 def run_eval(args: argparse.Namespace, settings: Settings) -> int:
@@ -220,9 +247,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    load_dotenv()
-    handlers = {"index": run_index, "ask": run_ask, "chat": run_chat, "eval": run_eval}
+    handlers = {
+        "index": run_index,
+        "ask": run_ask,
+        "chat": run_chat,
+        "status": run_status,
+        "eval": run_eval,
+    }
     try:
+        if args.command == "init":
+            return run_init(args)
         return handlers[args.command](args, _settings_from_args(args))
     except MiniRagError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -6,8 +6,9 @@ import hashlib
 import io
 import logging
 import os
-from collections.abc import Callable
-from pathlib import Path
+from collections.abc import Callable, Sequence
+from fnmatch import fnmatchcase
+from pathlib import Path, PurePosixPath
 
 import docx
 import pymupdf
@@ -61,26 +62,40 @@ _READERS: dict[str, Callable[[bytes], _Pages]] = {
 SUPPORTED_EXTENSIONS = frozenset(_READERS)
 
 
-def document_id_for(path: Path) -> str:
-    """Stable id derived from the absolute path."""
-    return hashlib.sha1(str(path.resolve()).encode()).hexdigest()[:16]
+def document_id_for(source: str) -> str:
+    """Stable id from the path relative to the project, so a moved project keeps its ids."""
+    return hashlib.sha1(source.encode()).hexdigest()[:16]
 
 
-def discover_files(root: Path) -> list[Path]:
-    """Recursively find supported files, skipping hidden entries and Word lock files."""
+def _is_ignored(relative: PurePosixPath, patterns: Sequence[str]) -> bool:
+    return any(
+        fnmatchcase(str(relative) if "/" in pattern else relative.name, pattern.lstrip("/"))
+        for pattern in patterns
+    )
+
+
+def discover_files(
+    directory: Path, root: Path | None = None, ignore: Sequence[str] = ()
+) -> list[Path]:
+    """Recursively find supported files, skipping hidden entries, Word lock files and anything
+    matching an `ignore` pattern (paths in patterns are relative to `root`)."""
+    root = root or directory
     found: list[Path] = []
 
     def onerror(error: OSError) -> None:
-        location = error.filename or str(root)
+        location = error.filename or str(directory)
         raise LoaderError(f"Could not scan directory {location}: {error}") from error
 
-    for directory, subdirs, names in os.walk(root, onerror=onerror):
-        subdirs[:] = sorted(d for d in subdirs if not d.startswith("."))  # prune, don't descend
+    def wanted(parent: str, name: str) -> bool:
+        relative = PurePosixPath(Path(parent, name).relative_to(root).as_posix())
+        return not name.startswith((".", "~$")) and not _is_ignored(relative, ignore)
+
+    for parent, subdirs, names in os.walk(directory, onerror=onerror):
+        subdirs[:] = sorted(d for d in subdirs if wanted(parent, d))  # prune, don't descend
         found.extend(
-            Path(directory, name)
+            Path(parent, name)
             for name in sorted(names)
-            if not name.startswith((".", "~$"))
-            and Path(name).suffix.lower() in SUPPORTED_EXTENSIONS
+            if Path(name).suffix.lower() in SUPPORTED_EXTENSIONS and wanted(parent, name)
         )
     return found
 
@@ -99,19 +114,14 @@ def load_file(path: Path, root: Path | None = None, data: bytes | None = None) -
         raise LoaderError(f"{path.name}: could not read file ({exc})") from exc
 
     source = path.relative_to(root).as_posix() if root else path.name
-    document_id = document_id_for(path)
+    document_id = document_id_for(source)
     documents = []
     for page, text in pages:
         if not text.strip():
             if page is not None:
                 logger.warning("%s: page %d has no extractable text (scanned?)", path.name, page)
             continue
-        # `path` lets `index --prune` tell which indexed documents live under a given directory.
-        metadata: Metadata = {
-            "source": source,
-            "document_id": document_id,
-            "path": str(path.resolve()),
-        }
+        metadata: Metadata = {"source": source, "document_id": document_id}
         if page is not None:
             metadata["page"] = page
         documents.append(Document(text=text, metadata=metadata))

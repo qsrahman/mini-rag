@@ -123,3 +123,42 @@ def test_discover_surfaces_directory_scan_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "walk", fail_walk)
     with pytest.raises(LoaderError, match=r"Could not scan directory.*private"):
         discover_files(tmp_path)
+
+
+def test_ids_depend_only_on_the_path_inside_the_project(tmp_path):
+    for name in ("one", "two"):
+        (tmp_path / name / "sub").mkdir(parents=True)
+        (tmp_path / name / "sub" / "n.txt").write_text("same")
+    [a] = load_file(tmp_path / "one" / "sub" / "n.txt", tmp_path / "one")
+    [b] = load_file(tmp_path / "two" / "sub" / "n.txt", tmp_path / "two")
+    assert (
+        a.metadata
+        == b.metadata
+        == {"source": "sub/n.txt", "document_id": a.metadata["document_id"]}
+    )
+
+
+@pytest.mark.parametrize(
+    "patterns,expected",
+    [
+        ([], ["a.md", "build/b.md", "docs/build/c.md", "docs/d.txt"]),
+        (["build"], ["a.md", "docs/d.txt"]),
+        (["/build"], ["a.md", "docs/build/c.md", "docs/d.txt"]),
+        (["*.txt"], ["a.md", "build/b.md", "docs/build/c.md"]),
+        (["docs/build"], ["a.md", "build/b.md", "docs/d.txt"]),
+    ],
+)
+def test_ignore_patterns(tmp_path, patterns, expected):
+    for rel in ["a.md", "build/b.md", "docs/build/c.md", "docs/d.txt"]:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    found = discover_files(tmp_path, ignore=patterns)
+    assert sorted(f.relative_to(tmp_path).as_posix() for f in found) == expected
+
+
+def test_ignore_paths_are_relative_to_the_project_when_scanning_a_subfolder(tmp_path):
+    (tmp_path / "docs" / "build").mkdir(parents=True)
+    (tmp_path / "docs" / "build" / "c.md").write_text("x")
+    (tmp_path / "docs" / "d.md").write_text("x")
+    found = discover_files(tmp_path / "docs", tmp_path, ["docs/build"])
+    assert [f.name for f in found] == ["d.md"]

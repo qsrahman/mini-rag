@@ -7,7 +7,7 @@ Not a framework. All processing, embedding and inference stay on the machine.
 
 ## Status
 
-The foundation described below is implemented and verified: 158 unit/integration tests pass, ruff
+The foundation described below is implemented and verified: 191 unit/integration tests pass, ruff
 and `mypy --strict` are clean.
 
 `uv run pytest -m live` (8 tests, ~2 min) passed against local Ollama (`qwen3.5:9b-mlx`,
@@ -34,7 +34,12 @@ exits 130.
 | Embedding model name stored on the collection | Prevents silently mixing incompatible vectors |
 | Hybrid retrieval (dense + BM25, RRF k=60) is the default; `dense` stays available | Measured gain on the eval; exact identifiers are common in documents |
 | BM25 via SQLite FTS5 in a derived `keywords.sqlite3`, repaired from ChromaDB on open | Stdlib, no new dependency, persistent; avoids a second source of truth |
-| Chunk metadata records the absolute `path`; `--prune` is scoped to the given directory | Lets prune distinguish "deleted" from "indexed from another directory" |
+| Per-project `.mini-rag/` found like `.git`; no global index | The command is installed globally; an index per document folder behaves the same from any subfolder |
+| Document ids and sources are project-relative | Projects can be moved; equal file names in different folders stay distinct |
+| Project config is allow-listed; symlinks refused; cloud models rejected; no `.env` loading | A downloaded folder must not redirect data or change behaviour |
+| ChromaDB built with `_env_file=None` and the Rust backend pinned | It otherwise reads a `.env` from the current folder, including class paths to import |
+| No database or history path settings | Relative ids make a shared database unsafe |
+| Default ignore patterns are written into `.mini-rag/ignore` | Visible and editable instead of hidden behaviour |
 | Reranking is opt-in, via the chat model's yes/no logprobs | No local rerank API; benefit was inconsistent, so default off |
 | `mini-rag eval`: synthetic question per chunk, frozen JSONL, hit-rate/MRR/NDCG | Adapted from the hybrid-retrieval cookbook with a local LLM; lets retrieval changes be measured |
 | Sources tracked outside the LLM | Citations can't be fabricated into the source list; unknown IDs produce a warning |
@@ -55,8 +60,9 @@ exits 130.
 1. **Chunk size is estimated, not tokenized.** The default of 400 tokens (~1600 characters) fits
    `nomic-embed-text-v2-moe`'s 512-token limit for English prose, but non-English or code-heavy text
    can tokenize denser and still exceed it.
-2. `index --prune` cannot remove documents indexed before `path` metadata existed (reported; needs `--rebuild`).
-3. `document_id` is derived from the absolute path; moving a folder re-indexes it and orphans old chunks.
+2. Moving a file inside a project re-indexes it; the old entry stays until `index --prune`.
+3. A project's `ignore` file and any prebuilt index are trusted as data; users should create their
+   own with `init`. Indexes from the old `./storage` layout are not migrated.
 4. Scanned PDFs have no OCR and are reported as failed.
 5. Live tests assert LLM text loosely (model output is nondeterministic), so a regression in answer
    quality would not necessarily fail them.
@@ -132,7 +138,7 @@ Reviewed `knowledge/hybrid-retrieval` and `knowledge/agentic-rag`. Outcome:
 
 ## Roadmap (not started; each is optional and out of scope for v1)
 
-1. Key `document_id` on the path relative to the index root.
+1. Re-point moved files without re-embedding them.
 2. A relevance-distance cutoff so weak matches aren't sent to the LLM (`RetrievedChunk.distance` is carried, but None for keyword-only hits).
 3. Streaming answers in chat.
 4. Conversation memory. A faster reranker (a real cross-encoder) only if the eval shows a clear need.

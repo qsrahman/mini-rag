@@ -9,6 +9,7 @@ from mini_rag.cli import build_parser, main
 from mini_rag.indexer import Indexer
 from mini_rag.models import MiniRagError
 from mini_rag.ollama_utils import OllamaError
+from mini_rag.project import init_project
 from mini_rag.rag import RagService
 from mini_rag.retriever import Retriever
 from mini_rag.vector_store import VectorStore
@@ -33,8 +34,20 @@ def store(tmp_path, embedder):
     return VectorStore(tmp_path / "db", "docs", embedder.model)
 
 
-def make_indexer(embedder, store, size=200, overlap=20):
-    return Indexer(embedder, store, size, overlap)
+def make_indexer(embedder, store, size=200, overlap=20, root=None, ignore=()):
+    return Indexer(embedder, store, size, overlap, root, ignore)
+
+
+@pytest.fixture
+def project(docs, monkeypatch):
+    """`docs` as a project, with Ollama's embedder replaced; returns common CLI arguments."""
+    init_project(docs)
+    monkeypatch.setattr("mini_rag.cli.OllamaEmbedder", lambda model, host: FakeEmbedder(model))
+    return ["--project", str(docs), "--embedding-model", "fake-embed"]
+
+
+def project_store(docs):
+    return VectorStore(docs / ".mini-rag" / "chroma", "documents", "fake-embed")
 
 
 def test_query_commands_share_model_options():
@@ -117,33 +130,38 @@ def test_source_filter(docs, embedder, store):
     assert {h.chunk.metadata["source"] for h in hits} == {"space.md"}
 
 
-def test_cli_index_and_help(docs, tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(
-        "mini_rag.cli.OllamaEmbedder",
-        lambda model, host: __import__("tests.conftest", fromlist=["x"]).FakeEmbedder(model),
-    )
-    db = str(tmp_path / "cli-db")
-    code = main(["index", str(docs), "--db-path", db, "--embedding-model", "fake-embed"])
+def test_cli_index_and_help(docs, project, capsys):
+    code = main(["index", *project])
     out = capsys.readouterr()
     assert code == 1  # two files failed
     assert "Files discovered: 6" in out.out and "Files indexed: 4" in out.out
     assert "Files failed: 2" in out.out
     assert "broken.pdf" in out.err
 
-    code = main(["index", str(docs), "--db-path", db, "--embedding-model", "fake-embed"])
+    code = main(["index", *project])
     assert "Files unchanged: 4" in capsys.readouterr().out
 
     # Changing the embedding model without --rebuild is refused with instructions.
-    code = main(["index", str(docs), "--db-path", db, "--embedding-model", "other"])
+    code = main(["index", *project, "--embedding-model", "other"])
     assert code == 1 and "--rebuild" in capsys.readouterr().err
 
-    code = main(["index", str(docs), "--db-path", db, "--embedding-model", "other", "--rebuild"])
+    code = main(["index", *project, "--embedding-model", "other", "--rebuild"])
     assert "Files indexed: 4" in capsys.readouterr().out
 
 
-def test_cli_rejects_missing_directory(tmp_path, capsys):
-    assert main(["index", str(tmp_path / "nope"), "--db-path", str(tmp_path / "db")]) == 1
+def test_cli_rejects_missing_directory(docs, project, tmp_path, capsys):
+    assert main(["index", str(tmp_path / "nope"), *project]) == 1
     assert "Not a directory" in capsys.readouterr().err
+
+
+def test_cli_refuses_to_index_outside_the_project(docs, project, tmp_path, capsys):
+    main(["index", *project])
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    # Even with --rebuild, a bad argument must not drop the existing index.
+    assert main(["index", str(outside), "--rebuild", *project]) == 1
+    assert "outside the project" in capsys.readouterr().err
+    assert project_store(docs).count() == 4
 
 
 def test_unreadable_file_is_reported_not_fatal(tmp_path, embedder, store):
@@ -161,23 +179,20 @@ def test_unreadable_file_is_reported_not_fatal(tmp_path, embedder, store):
     assert [p.name for p, _ in summary.failed] == ["locked.txt"]
 
 
-def test_rebuild_with_unreachable_ollama_keeps_existing_index(docs, tmp_path, capsys, monkeypatch):
-    db = str(tmp_path / "db")
-    args = ["--db-path", db, "--embedding-model", "fake-embed"]
-    monkeypatch.setattr("mini_rag.cli.OllamaEmbedder", lambda model, host: FakeEmbedder(model))
-    main(["index", str(docs), *args])
+def test_rebuild_with_unreachable_ollama_keeps_existing_index(docs, project, monkeypatch):
+    main(["index", *project])
 
     class Down(FakeEmbedder):
         def embed(self, texts):
             raise OllamaError("Cannot connect to Ollama")
 
     monkeypatch.setattr("mini_rag.cli.OllamaEmbedder", lambda model, host: Down(model))
-    assert main(["index", str(docs), *args, "--rebuild"]) == 1
-    assert VectorStore(Path(db), "documents", "fake-embed").count() == 4
+    assert main(["index", *project, "--rebuild"]) == 1
+    assert project_store(docs).count() == 4
 
 
-def test_invalid_collection_name_is_a_clean_error(tmp_path, capsys):
-    code = main(["ask", "q", "--db-path", str(tmp_path / "db"), "--collection", "x"])
+def test_invalid_collection_name_is_a_clean_error(project, capsys):
+    code = main(["ask", "q", *project, "--collection", "x"])
     assert code == 1 and "Invalid collection name" in capsys.readouterr().err
 
 
@@ -198,10 +213,7 @@ def test_store_sample_is_reproducible_and_skips_tiny_chunks(tmp_path, embedder):
     assert store.chunk_ids() >= {cid for cid, _ in first}
 
 
-def test_cli_eval_generate_then_score(docs, tmp_path, capsys, monkeypatch):
-    db = str(tmp_path / "db")
-    args = ["--db-path", db, "--embedding-model", "fake-embed"]
-    monkeypatch.setattr("mini_rag.cli.OllamaEmbedder", lambda model, host: FakeEmbedder(model))
+def test_cli_eval_generate_then_score(docs, project, tmp_path, capsys, monkeypatch):
     # Stand-in question writer: first words of the passage, so the fake embedder can find it.
     monkeypatch.setattr(
         "mini_rag.cli.ollama_question_writer",
@@ -209,18 +221,18 @@ def test_cli_eval_generate_then_score(docs, tmp_path, capsys, monkeypatch):
     )
     for name in ("long.txt", "other.txt"):
         (docs / name).write_text(f"{name} " + "distinct filler sentence about things. " * 12)
-    main(["index", str(docs), *args])
+    main(["index", *project])
     capsys.readouterr()
 
     qfile = tmp_path / "q.jsonl"
-    assert main(["eval", str(qfile), "--generate", "2", *args]) == 0
+    assert main(["eval", str(qfile), "--generate", "2", *project]) == 0
     assert "Wrote 2 questions" in capsys.readouterr().out
 
     # The set is frozen: refuse to overwrite without --force.
-    assert main(["eval", str(qfile), "--generate", "2", *args]) == 1
+    assert main(["eval", str(qfile), "--generate", "2", *project]) == 1
     assert "already exists" in capsys.readouterr().err
 
-    assert main(["eval", str(qfile), "--k", "5", *args]) == 0
+    assert main(["eval", str(qfile), "--k", "5", *project]) == 0
     out = capsys.readouterr().out
     assert "Retrieval eval: 2 questions, k=5" in out and "chunk hit@1" in out
 
@@ -266,19 +278,20 @@ def test_prune_removes_only_deleted_files_under_the_directory(docs, embedder, st
     other = tmp_path / "other"
     other.mkdir()
     (other / "keep.txt").write_text("Content from a different indexed directory.")
-    indexer = make_indexer(embedder, store)
+    indexer = make_indexer(embedder, store, root=tmp_path)
     indexer.index_directory(docs)
     indexer.index_directory(other)
     before = store.count()
 
     (docs / "cooking.txt").unlink()
+    (other / "keep.txt").unlink()  # deleted too, but outside the directory being pruned
     summary = indexer.index_directory(docs, prune=True)
 
-    assert summary.pruned == 1 and summary.unprunable == 0
+    assert summary.pruned == 1
     assert store.count() == before - 1
     assert store.keyword_query("pasta", 5) == []
     assert any(
-        r.chunk.metadata["source"] == "keep.txt" for r in store.keyword_query("different", 5)
+        r.chunk.metadata["source"] == "other/keep.txt" for r in store.keyword_query("different", 5)
     )
 
 
@@ -309,30 +322,76 @@ def test_prune_refuses_to_wipe_when_directory_has_no_supported_files(docs, embed
     assert store.count() == 4
 
 
-def test_prune_reports_documents_indexed_before_paths_were_recorded(docs, embedder, store):
-    indexer = make_indexer(embedder, store)
-    indexer.index_directory(docs)
-    # Strip the path from one document's chunks to mimic an older index.
-    stored = store._collection.get(
-        where={"source": "space.md"}, include=["documents", "metadatas", "embeddings"]
-    )
-    store._collection.delete(ids=stored["ids"])  # upsert/update would merge, keeping `path`
-    store._collection.add(
-        ids=stored["ids"],
-        documents=stored["documents"],
-        embeddings=stored["embeddings"],
-        metadatas=[{k: v for k, v in m.items() if k != "path"} for m in stored["metadatas"]],
-    )
-    assert "path" not in store._collection.get(where={"source": "space.md"})["metadatas"][0]
-    (docs / "space.md").unlink()
-    summary = indexer.index_directory(docs, prune=True)
-    assert summary.pruned == 0 and summary.unprunable == 1
+def test_prune_removes_files_that_became_ignored(docs, embedder, store):
+    make_indexer(embedder, store).index_directory(docs)
+    summary = make_indexer(embedder, store, ignore=["cooking.*"]).index_directory(docs, prune=True)
+    assert summary.pruned == 1 and store.count() == 3
 
 
-def test_cli_prune_flag(docs, tmp_path, capsys, monkeypatch):
-    args = ["--db-path", str(tmp_path / "db"), "--embedding-model", "fake-embed"]
-    monkeypatch.setattr("mini_rag.cli.OllamaEmbedder", lambda model, host: FakeEmbedder(model))
-    main(["index", str(docs), *args])
+def test_cli_prune_flag(docs, project, capsys):
+    main(["index", *project])
     (docs / "cooking.txt").unlink()
-    main(["index", str(docs), "--prune", *args])
+    main(["index", "--prune", *project])
     assert "Documents pruned: 1" in capsys.readouterr().out
+
+
+def test_cli_init_then_use_from_a_subfolder(docs, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("mini_rag.cli.OllamaEmbedder", lambda model, host: FakeEmbedder(model))
+    model = ["--embedding-model", "fake-embed"]
+    (docs / "sub").mkdir()
+    (docs / "sub" / "deep.txt").write_text("Glaciers move slowly down mountain valleys.")
+    (docs / "node_modules").mkdir()
+    (docs / "node_modules" / "readme.md").write_text("Dependency documentation.")
+    assert main(["init", str(docs)]) == 0
+
+    monkeypatch.chdir(docs / "sub")
+    main(["index", *model])
+    assert "Files discovered: 7" in capsys.readouterr().out  # node_modules is ignored
+    assert main(["status", *model]) == 0
+    out = capsys.readouterr().out
+    assert f"Project: {docs.resolve()}" in out and "Indexed chunks: 5" in out
+    assert "deep.txt" in {Path(s).name for s in project_store(docs).indexed_documents().values()}
+    assert "sub/deep.txt" in project_store(docs).indexed_documents().values()
+
+
+def test_cli_indexing_a_subfolder_keeps_project_relative_sources(docs, project, capsys):
+    (docs / "sub").mkdir()
+    (docs / "sub" / "deep.txt").write_text("Glaciers move slowly down mountain valleys.")
+    assert main(["index", str(docs / "sub"), *project]) == 0
+    assert list(project_store(docs).indexed_documents().values()) == ["sub/deep.txt"]
+
+
+def test_moved_project_keeps_its_index(docs, project, tmp_path, capsys):
+    main(["index", *project])
+    moved = tmp_path / "renamed"
+    docs.rename(moved)
+    capsys.readouterr()
+    main(["index", "--project", str(moved), "--embedding-model", "fake-embed"])
+    out = capsys.readouterr().out
+    assert "Files unchanged: 4" in out and "Files indexed: 0" in out
+    assert project_store(moved).count() == 4
+
+
+def test_cli_without_a_project_explains_what_to_do(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["ask", "q"]) == 1
+    assert "mini-rag init" in capsys.readouterr().err
+    assert not (tmp_path / ".mini-rag").exists()  # never created silently
+
+
+def test_dotenv_files_are_not_loaded(docs, project, capsys, monkeypatch):
+    (docs / ".env").write_text("RAG_TOP_K=not-a-number\n")
+    monkeypatch.chdir(docs)
+    assert main(["status", *project]) == 0
+
+
+def test_cwd_dotenv_cannot_reconfigure_chroma(tmp_path, monkeypatch):
+    # The Python backend would unpickle files found in the database directory.
+    (tmp_path / ".env").write_text(
+        "chroma_api_impl=chromadb.api.segment.SegmentAPI\nchroma_server_host=attacker.example\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    store = VectorStore(tmp_path / "db", "documents", "fake-embed")
+    settings = store._client.get_settings()
+    assert settings.chroma_api_impl == "chromadb.api.rust.RustBindingsAPI"
+    assert settings.chroma_server_host is None

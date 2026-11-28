@@ -26,7 +26,8 @@ flowchart LR
 
 | Module | Responsibility |
 |---|---|
-| `config.py` | Defaults, `RAG_*` environment variables, validation |
+| `project.py` | `.mini-rag/` discovery and creation, filtered project config, ignore patterns |
+| `config.py` | Defaults, `RAG_*` settings, validation |
 | `models.py` | `Document`, `Chunk`, `RetrievedChunk`, `Source`, `Answer`, base error |
 | `ingestion/loaders.py` | File discovery and text extraction (PDF pages keep page numbers) |
 | `ingestion/chunker.py` | Paragraph/sentence-aware chunking with overlap |
@@ -78,41 +79,96 @@ ollama pull qwen3.5:9b-mlx
 ollama pull nomic-embed-text-v2-moe
 ```
 
-## Setup
+## Install
+
+As a global command:
 
 ```bash
-uv sync
-uv run mini-rag --help
+uv tool install git+https://github.com/qsrahman/mini-rag
 ```
 
-### Dependency management
+From a local clone, use `uv tool install .` (add `--editable` while developing, or `--reinstall`
+to pick up changes). `uv tool install` resolves dependencies fresh and does not use `uv.lock`.
+
+For development, work in the clone with `uv sync` and prefix commands with `uv run`.
+
+## Quick start
 
 ```bash
-uv add <package>          # runtime dependency
-uv add --dev <package>    # development dependency
-uv sync                   # install from uv.lock
+cd ~/work/contracts
 ```
+
+```bash
+mini-rag init
+```
+
+```bash
+mini-rag index
+```
+
+```bash
+mini-rag ask "What is the notice period?"
+```
+
+## Projects
+
+`mini-rag init [folder]` turns a document folder into a project by creating `.mini-rag/`:
+
+```text
+contracts/
+├── .mini-rag/
+│   ├── config.env     settings for this project
+│   ├── ignore         files and folders `index` skips
+│   ├── chroma/        vectors and keywords.sqlite3
+│   ├── chat_history
+│   └── .gitignore     contains "*", so none of this is committed
+└── leases/office.pdf
+```
+
+- Every other command uses the nearest `.mini-rag/` in the current folder or its parents, so it
+  works from any subfolder. `--project PATH` picks one explicitly (no parent search).
+- Nothing is created implicitly. `init` refuses your home folder and `/`.
+- Documents are identified by their path relative to the project, so you can move or rename the
+  project folder without re-indexing.
+- Each project has its own index; one question searches one project. To remove a project, delete
+  its `.mini-rag/` folder.
+- `ignore` takes one pattern per line (`*`, `?`). A pattern without `/` matches a name anywhere;
+  with `/` it matches a path from the project root. It starts with `node_modules`, `venv`,
+  `__pycache__`, `site-packages`, `build`, `dist` and `target`; delete lines you want indexed.
+  Hidden files and folders are always skipped.
+
+### Folders from other people
+
+A `.mini-rag/` folder may arrive with a clone or download, so it is not trusted:
+
+- Only the settings marked "yes" under Configuration are read from `config.env`. Others (such as the
+  Ollama host or system prompt) are ignored with a warning, as are Ollama cloud models
+  (`...:cloud`), which would send your documents off the machine.
+- Symbolic links inside `.mini-rag/` are refused.
+- `.env` files are not loaded.
+- A ready-made index can contain any text, and the `ignore` file decides what gets indexed. Do not
+  rely on someone else's `.mini-rag/`: delete it and run `mini-rag init` yourself.
 
 ## Configuration
 
-Settings come from defaults, then environment variables (a `.env` file in the working directory is
-loaded; see [.env.example](.env.example)), then CLI options.
+Priority: defaults, then the project's `.mini-rag/config.env`, then environment variables, then
+command-line options. [.env.example](.env.example) lists the variables.
 
-| Variable | Default | CLI option |
-|---|---|---|
-| `RAG_LLM_MODEL` | `qwen3.5:9b-mlx` | `--model` (ask, chat) |
-| `RAG_EMBEDDING_MODEL` | `nomic-embed-text-v2-moe` | `--embedding-model` |
-| `RAG_OLLAMA_HOST` | `http://localhost:11434` | `--ollama-host` |
-| `RAG_CHUNK_SIZE` | `400` | `--chunk-size` (index) |
-| `RAG_CHUNK_OVERLAP` | `60` | `--chunk-overlap` (index) |
-| `RAG_TOP_K` | `5` | `--top-k` (ask, chat) |
-| `RAG_RETRIEVAL` | `hybrid` | `--retrieval dense\|hybrid` (ask, chat, eval) |
-| `RAG_RERANK` | `false` | `--rerank` / `--no-rerank` (ask, chat, eval) |
-| `RAG_NUM_CTX` | `8192` | |
-| `RAG_VECTOR_DB_PATH` | `./storage/chroma` | `--db-path` |
-| `RAG_COLLECTION_NAME` | `documents` | `--collection` |
-| `RAG_HISTORY_PATH` | `./storage/chat_history` | |
-| `RAG_SYSTEM_PROMPT` | built-in grounded-QA prompt | |
+| Variable | Default | CLI option | In `config.env` |
+|---|---|---|---|
+| `RAG_LLM_MODEL` | `qwen3.5:9b-mlx` | `--model` (ask, chat) | yes |
+| `RAG_EMBEDDING_MODEL` | `nomic-embed-text-v2-moe` | `--embedding-model` | yes |
+| `RAG_CHUNK_SIZE` | `400` | `--chunk-size` (index) | yes |
+| `RAG_CHUNK_OVERLAP` | `60` | `--chunk-overlap` (index) | yes |
+| `RAG_TOP_K` | `5` | `--top-k` (ask, chat) | yes |
+| `RAG_RETRIEVAL` | `hybrid` | `--retrieval dense\|hybrid` | yes |
+| `RAG_RERANK` | `false` | `--rerank` / `--no-rerank` | yes |
+| `RAG_NUM_CTX` | `8192` | | yes |
+| `RAG_OLLAMA_HOST` | `http://localhost:11434` | `--ollama-host` | no |
+| `RAG_COLLECTION_NAME` | `documents` | `--collection` | no |
+| `RAG_SYSTEM_PROMPT` | built-in grounded-QA prompt | | no |
+
+The database and chat history always live in the project's `.mini-rag/`.
 
 Invalid values (non-positive sizes, overlap ≥ size, non-integers) are rejected at startup.
 
@@ -174,10 +230,15 @@ strong (details in PLAN.md). Use `mini-rag eval ... --rerank` on your own docume
 ### Index documents
 
 ```bash
-uv run mini-rag index ./documents
-uv run mini-rag index ./documents --rebuild    # drop the collection and re-index
-uv run mini-rag index ./documents --prune      # also drop documents whose files were deleted
+mini-rag index                 # the whole project
+mini-rag index leases          # one folder inside the project
+mini-rag index --rebuild       # drop the collection and re-index
+mini-rag index --prune         # also drop documents that were deleted or are now ignored
+mini-rag status                # project, models and number of indexed chunks
 ```
+
+`--rebuild` drops the project's whole collection before indexing, so run it without a folder
+argument unless you want only that folder in the index.
 
 Discovers `.pdf`, `.docx`, `.txt`, `.md`/`.markdown` files recursively (hidden files and Word lock
 files are skipped), then prints a summary. Corrupted or empty files, and PDFs with no text layer
@@ -188,16 +249,16 @@ instructions.
 ### Ask one question
 
 ```bash
-uv run mini-rag ask "Explain supervised learning."
-uv run mini-rag ask "Explain neural networks." --top-k 8
-uv run mini-rag ask "What does chapter 2 say?" --source guide.pdf   # restrict to one file
+mini-rag ask "Explain supervised learning."
+mini-rag ask "Explain neural networks." --top-k 8
+mini-rag ask "What does chapter 2 say?" --source books/guide.pdf   # path relative to the project
 ```
 
 ### Measure retrieval quality
 
 ```bash
-uv run mini-rag eval questions.jsonl --generate 100   # once: a local LLM writes one question per sampled chunk
-uv run mini-rag eval questions.jsonl                  # score the current retriever (k=10 by default)
+mini-rag eval questions.jsonl --generate 100   # once: a local LLM writes one question per sampled chunk
+mini-rag eval questions.jsonl                  # score the current retriever (k=10 by default)
 ```
 
 Each generated question is paired with the chunk it came from, which counts as the single correct
@@ -211,7 +272,7 @@ Recipe adapted from the [hybrid-retrieval cookbook](https://github.com/daveebbel
 ### Interactive chat
 
 ```bash
-uv run mini-rag chat
+mini-rag chat
 ```
 
 Each question is answered independently (there is no conversation memory).
@@ -219,7 +280,7 @@ Each question is answered independently (there is no conversation memory).
 | Command | Description |
 |---|---|
 | `/help` | Show commands and keys |
-| `/status` | Model, database and index status |
+| `/status` | Project, model, database and index status |
 | `/clear` | Clear the screen |
 | `/exit`, `/quit` | Leave (also Ctrl+D) |
 
@@ -227,7 +288,7 @@ Each question is answered independently (there is no conversation memory).
 |---|---|
 | Enter | Send |
 | Alt+Enter / Ctrl+J | Newline (pasted multi-line text is kept) |
-| Up / Down, Ctrl+R | History browse / search (persisted in `RAG_HISTORY_PATH`) |
+| Up / Down, Ctrl+R | History browse / search (persisted in `.mini-rag/chat_history`) |
 | Ctrl+C | Cancel the current input, or a running answer |
 | Ctrl+D | Exit |
 
@@ -235,12 +296,12 @@ Each question is answered independently (there is no conversation memory).
 
 ```text
 src/mini_rag/
-  cli.py  interactive.py  config.py  models.py
-  indexer.py  retriever.py  generator.py  rag.py
-  embeddings.py  vector_store.py  ollama_utils.py
+  cli.py  interactive.py  project.py  config.py  models.py
+  indexer.py  retriever.py  reranker.py  generator.py  rag.py
+  embeddings.py  vector_store.py  keyword_index.py  evaluation.py  ollama_utils.py
   ingestion/  loaders.py  chunker.py
 tests/
-  unit/  integration/  conftest.py
+  unit/  integration/  e2e/  conftest.py
 ```
 
 ## Development
@@ -259,6 +320,14 @@ Ctrl+C during generation in a pty); it skips itself if Ollama or the models are 
 Other tests mock Ollama; integration tests use temporary ChromaDB directories and a deterministic fake
 embedder.
 
+### Dependency management
+
+```bash
+uv add <package>          # runtime dependency
+uv add --dev <package>    # development dependency
+uv sync                   # install from uv.lock
+```
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -267,11 +336,15 @@ embedder.
 | `model ... is not available` | `ollama pull <model>` |
 | `was built with embedding model ...` | You changed the embedding model; re-run `index --rebuild` |
 | `no extractable text` for a PDF | It is likely scanned images; OCR is not supported |
-| Answers say nothing was found | Run `index` first, check `/status` shows chunks, try a larger `--top-k` |
+| `No mini-rag project here` | Run `mini-rag init` in your document folder, or pass `--project` |
+| Answers say nothing was found | Run `index` first, check `status` shows chunks, try a larger `--top-k` |
 | Slow first answer | The model is loading into memory; thinking models also reason before replying |
 
 ## Known limitations
 
-- `--prune` only removes documents under the directory you pass, and only if they were indexed after paths started being recorded; older ones are reported and need `--rebuild`. It refuses to run if no supported files are found under the directory, so an empty or unmounted folder cannot wipe the index.
-- Document identity is the absolute file path; moving a folder re-indexes it (old chunks remain until a rebuild).
-- Retrieval is pure vector search (no reranking or hybrid search) and there is no multi-turn memory, by design.
+- Moving or renaming a file *inside* a project indexes it as new; `index --prune` removes the old
+  entry.
+- `--prune` refuses to run if it finds no supported files where indexed documents live, so an empty
+  or unmounted folder cannot wipe the index.
+- Indexes created before projects existed (`./storage/chroma`) are not used; run `init` and `index`.
+- There is no multi-turn memory, by design.

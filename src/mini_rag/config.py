@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from mini_rag.models import MiniRagError
+from mini_rag.project import Project
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are a document question-answering assistant. You answer using only the documents supplied \
@@ -52,9 +53,12 @@ class Settings:
     # Ollama's default context window is small; retrieved chunks would be
     # silently truncated without raising it.
     num_ctx: int = 8192
-    vector_db_path: Path = Path("./storage/chroma")
     collection_name: str = "documents"
-    history_path: Path = Path("./storage/chat_history")
+    # Set from the project by `for_project`; never read from the environment, because document
+    # ids are relative to the project and two projects must not share a database.
+    project_root: Path = Path(".")
+    vector_db_path: Path = Path(".mini-rag/chroma")
+    history_path: Path = Path(".mini-rag/chat_history")
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     def __post_init__(self) -> None:
@@ -104,10 +108,19 @@ class Settings:
             retrieval=text("RAG_RETRIEVAL", defaults.retrieval),
             rerank=text("RAG_RERANK", "false").strip().lower() in ("1", "true", "yes", "on"),
             num_ctx=integer("RAG_NUM_CTX", defaults.num_ctx),
-            vector_db_path=Path(text("RAG_VECTOR_DB_PATH", str(defaults.vector_db_path))),
             collection_name=text("RAG_COLLECTION_NAME", defaults.collection_name),
-            history_path=Path(text("RAG_HISTORY_PATH", str(defaults.history_path))),
             system_prompt=text("RAG_SYSTEM_PROMPT", defaults.system_prompt),
+        )
+
+    @classmethod
+    def for_project(cls, project: Project, env: Mapping[str, str] | None = None) -> Settings:
+        """Defaults < project config.env < environment variables."""
+        env = os.environ if env is None else env
+        return dataclasses.replace(
+            cls.from_env({**project.config(), **env}),
+            project_root=project.root,
+            vector_db_path=project.vector_db_path,
+            history_path=project.history_path,
         )
 
     def with_overrides(self, **overrides: Any) -> Settings:

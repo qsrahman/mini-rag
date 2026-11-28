@@ -61,6 +61,18 @@ def format_answer(answer: Answer) -> str:
     return "\n".join(lines)
 
 
+def format_status(settings: Settings, chunk_count: int) -> str:
+    return (
+        f"Project: {settings.project_root}\n"
+        f"Model: {settings.llm_model}\n"
+        f"Embedding: {settings.embedding_model}\n"
+        f"Ollama: {settings.ollama_host}\n"
+        f"Database: {settings.vector_db_path}\n"
+        f"Collection: {settings.collection_name}\n"
+        f"Indexed chunks: {chunk_count}"
+    )
+
+
 @contextmanager
 def working(message: str) -> Iterator[None]:
     """Show a spinner on stderr while a blocking call runs (only on a real terminal)."""
@@ -126,15 +138,7 @@ class ChatShell:
         print_formatted_text(FormattedText([(style, text)]))
 
     def status_text(self) -> str:
-        s = self._settings
-        return (
-            f"Model: {s.llm_model}\n"
-            f"Embedding: {s.embedding_model}\n"
-            f"Ollama: {s.ollama_host}\n"
-            f"Database: {s.vector_db_path}\n"
-            f"Collection: {s.collection_name}\n"
-            f"Indexed chunks: {self._chunk_count()}"
-        )
+        return format_status(self._settings, self._chunk_count())
 
     def run(self) -> int:
         self._write(BANNER, "bold ansicyan")
